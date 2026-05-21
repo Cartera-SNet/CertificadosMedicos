@@ -1,19 +1,20 @@
-[nixpacks]
-providers = ["nix"]
+[build]
+builder = "nixpacks"
 
-[nix]
-aptPackages = [
+[build.nixpacksPlan.phases.setup]
+aptPkgs = [
   "libreoffice",
-  "libreoffice-calc",
-  "fonts-dejavu"
+  "libreoffice-writer", 
+  "fonts-liberation",
+  "fonts-dejavu",
+  "python3-pip"
 ]
 
-[pkgs.python3.withPackages]
-packages = [
-  "flask",
-  "requests",
-  "openpyxl",
-  "python-docx",
-  "Pillow",
-  "urllib3",
+[build.nixpacksPlan.phases.install]
+cmds = [
+  "pip install flask==3.0.3 requests==2.31.0 openpyxl==3.1.2 python-docx==1.1.2 Pillow urllib3"
 ]
+
+[deploy]
+startCommand = "python app.py"
+restartPolicyType = "on_failure"

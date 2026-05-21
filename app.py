@@ -576,37 +576,50 @@ def generar_docx(datos_api, no_cuenta, ruta_png_firma, session_dir) -> Path:
 
 
 # ─────────────────────────────────────────────────────────────
-# CONVERSIÓN DOCX → PDF (multiplataforma)
+# CONVERSIÓN DOCX → PDF (docx2pdf — usa Word instalado)
 # ─────────────────────────────────────────────────────────────
 def docx_a_pdf(ruta_docx: Path, session_dir: Path) -> Path:
     """
-    Convierte docx a PDF.
-    - En Windows: usa docx2pdf (requiere Word instalado)
-    - En Linux/Railway: usa LibreOffice CLI
+    Convierte DOCX → PDF.
+    - En Linux (Railway/servidor): usa LibreOffice headless
+    - En Windows (local): usa docx2pdf (requiere Word)
     """
-    import platform
+    import platform, subprocess, shutil
 
-    # Intentar primero con docx2pdf (solo funciona en Windows con Word)
-    if platform.system() == "Windows":
-        try:
-            from docx2pdf import convert
-            pdf_path = session_dir / (ruta_docx.stem + ".pdf")
-            convert(str(ruta_docx), str(pdf_path))
-            if not pdf_path.exists():
-                raise Exception("PDF no generado")
-            return pdf_path
-        except ImportError:
-            raise Exception("docx2pdf no instalado. Ejecuta: pip install docx2pdf")
-        except Exception as e:
-            raise Exception(f"Error convirtiendo a PDF con docx2pdf: {e}")
+    pdf_path = session_dir / (ruta_docx.stem + ".pdf")
 
-    # En Linux/Railway, usar LibreOffice
+    # ── Linux: LibreOffice headless ──
+    if platform.system() != "Windows":
+        lo_bin = shutil.which("libreoffice") or shutil.which("soffice")
+        if not lo_bin:
+            raise Exception(
+                "LibreOffice no está instalado. "
+                "En Railway, añade esto al railway.toml:\n"
+                "[build.nixpacksPlan.phases.setup]\n"
+                'aptPkgs = ["libreoffice", "libreoffice-writer"]'
+            )
+        result = subprocess.run(
+            [lo_bin, "--headless", "--convert-to", "pdf",
+             "--outdir", str(session_dir), str(ruta_docx)],
+            capture_output=True, text=True, timeout=120
+        )
+        if result.returncode != 0:
+            raise Exception(f"LibreOffice error: {result.stderr[:300]}")
+        if not pdf_path.exists():
+            raise Exception("PDF no generado por LibreOffice")
+        return pdf_path
+
+    # ── Windows: docx2pdf (usa Word instalado) ──
     try:
-        # Importar función del módulo de conversión
-        import convertidor_pdf as cpdf
-        return cpdf.docx_a_pdf_libreoffice(ruta_docx, session_dir)
+        from docx2pdf import convert
+        convert(str(ruta_docx), str(pdf_path))
+        if not pdf_path.exists():
+            raise Exception("PDF no generado")
+        return pdf_path
+    except ImportError:
+        raise Exception("docx2pdf no instalado. Ejecuta: pip install docx2pdf")
     except Exception as e:
-        raise Exception(f"Error convirtiendo a PDF (LibreOffice): {e}")
+        raise Exception(f"Error convirtiendo a PDF: {e}")
 
 # ─────────────────────────────────────────────────────────────
 # REPORTE EXCEL
@@ -1146,8 +1159,8 @@ def descargar_zip():
                      as_attachment=True, download_name=zp)
 
 if __name__ == "__main__":
+    import webbrowser
     import urllib3
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-    # Railway proporciona el puerto en la variable de entorno PORT
-    port = int(os.environ.get("PORT", 5050))
-    app.run(debug=False, port=port, host="0.0.0.0")
+    webbrowser.open("http://localhost:5050")
+    app.run(debug=False, port=5050, host="0.0.0.0")
