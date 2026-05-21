@@ -10,10 +10,10 @@ aptPackages = [
 
 [pkgs.python3.withPackages]
 packages = [
-  "flask"
-  "requests"
-  "openpyxl"
-  "python-docx"
-  "Pillow"
-  "urllib3"
+  "flask",
+  "requests",
+  "openpyxl",
+  "python-docx",
+  "Pillow",
+  "urllib3",
 ]
