@@ -1,0 +1,19 @@
+[nixpacks]
+providers = ["nix"]
+
+[nix]
+aptPackages = [
+  "libreoffice",
+  "libreoffice-calc",
+  "fonts-dejavu"
+]
+
+[pkgs.python3.withPackages]
+packages = [
+  "flask"
+  "requests"
+  "openpyxl"
+  "python-docx"
+  "Pillow"
+  "urllib3"
+]
