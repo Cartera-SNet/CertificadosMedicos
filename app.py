@@ -596,9 +596,9 @@ def generar_pdf_directo(datos_api, no_cuenta, ruta_png_firma, session_dir) -> Pa
 
     if c.stringWidth(intro, F2, 9.941) <= MAX_W:
         # Cabe en una línea — exacto al MUESTRA
-        c.drawString(31.92, yt(64.07), intro)
+        c.drawString(31.92, yt(67.07), intro)
         # Línea 2: paciente — x=31.92  y_top=74.07
-        c.drawString(31.92, yt(76.07), f"Señor(a)   {paciente}")
+        c.drawString(31.92, yt(79.07), f"Señor(a)   {paciente}")
     else:
         # Wrap: partir en dos líneas usando las mismas y del MUESTRA
         words = intro.split(); lines = []; line = ""
@@ -612,25 +612,25 @@ def generar_pdf_directo(datos_api, no_cuenta, ruta_png_firma, session_dir) -> Pa
         if line: lines.append(line)
         c.drawString(31.92, yt(62.07), lines[0])
         if len(lines) > 1:
-            c.drawString(31.92, yt(76.07), lines[1])
+            c.drawString(31.92, yt(79.07), lines[1])
         # Paciente en siguiente línea disponible
-        c.drawString(31.92, yt(76.07 + 12.0), f"Señor(a)   {paciente}")
+        c.drawString(31.92, yt(79.07 + 12.0), f"Señor(a)   {paciente}")
 
     # ── COLUMNA IZQUIERDA ──────────────────────────────────────
     # Identificación: x=35.64  y_top=113.91
     # Sexo:           x=35.64  y_top=132.63
     # Servicio:       x=35.64  y_top=152.07
-    c.drawString(35.64, yt(115.91), f"Identificación: {tipo_documento}")
-    c.drawString(35.64, yt(134.63), f"Sexo:  {sexo}")
-    c.drawString(35.64, yt(154.07), f"Servicio Ingreso:  {cod_servicio} - {nom_servicio}")
+    c.drawString(35.64, yt(118.91), f"Identificación: {tipo_documento}")
+    c.drawString(35.64, yt(137.63), f"Sexo:  {sexo}")
+    c.drawString(35.64, yt(157.07), f"Servicio Ingreso:  {cod_servicio} - {nom_servicio}")
 
     # ── COLUMNA DERECHA ────────────────────────────────────────
     # Edad:         x=365.64  y_top=112.35
     # Fecha Nac:    x=365.64  y_top=132.63
     # Fecha Ingr:   x=365.64  y_top=152.07
-    c.drawString(365.64, yt(114.35), f"Edad: {edad} {medida_edad}")
-    c.drawString(365.64, yt(134.63), f"Fecha Nacimiento:  {fecha_nac}")
-    c.drawString(365.64, yt(154.07), f"Fecha y hora ingreso:  {fecha_ingreso}")
+    c.drawString(365.64, yt(117.35), f"Edad: {edad} {medida_edad}")
+    c.drawString(365.64, yt(137.63), f"Fecha Nacimiento:  {fecha_nac}")
+    c.drawString(365.64, yt(157.07), f"Fecha y hora ingreso:  {fecha_ingreso}")
 
     # ══════════════════════════════════════════════════════════
     # EL SUSCRITO — CIDFont+F1 sz=9.941, centrado
@@ -659,31 +659,31 @@ def generar_pdf_directo(datos_api, no_cuenta, ruta_png_firma, session_dir) -> Pa
             img = _PI.open(str(ruta_png_firma))
             iw, ih = img.size
             ratio = iw / ih if ih > 0 else 2.5
+            # Zona firma: de y_top=220 a y_top=270 (exacto del MUESTRA)
+            # 50pt de alto disponible, centrado horizontalmente en zona derecha
             FIRMA_MAX_H = 55.0
             FIRMA_MAX_W = FIRMA_ZW * 0.75
             fw = min(FIRMA_MAX_W, FIRMA_MAX_H * ratio)
             fh = fw / ratio
             if fh > FIRMA_MAX_H: fh = FIRMA_MAX_H; fw = fh * ratio
-            # Firma empieza ENCIMA de la línea
-            # fy en ReportLab = esquina inferior izquierda de la imagen
-            # La imagen se dibuja hacia ARRIBA desde fy
-            # Queremos que la base de la firma quede 2pt sobre la línea
-            fy = yt(LINEA_Y_TOP) + 2  # 2pt encima de la línea
             fx = FIRMA_X + (FIRMA_ZW - fw) / 2
+            # Firma debe quedar CLARAMENTE arriba de la línea
+            # fy = base de la imagen, se dibuja hacia arriba
+            # Subimos 4pt extra para que haya espacio visible entre firma y línea
+            fy = yt(LINEA_Y_TOP) + 4
             c.drawImage(str(ruta_png_firma), fx, fy, fw, fh, mask="auto")
         except Exception as e:
             log(f"  → Firma PDF error: {e}", "warn")
 
-    # Línea horizontal — entre firma (arriba) y Dr. (abajo)
-    # Posición exacta del MUESTRA: y_top=282.24
+    # Línea horizontal — dibujada DESPUÉS de la firma (encima visualmente)
     c.setLineWidth(0.96)
     c.line(322.2, yt(LINEA_Y_TOP), 565.2, yt(LINEA_Y_TOP))
 
     # DR. y REG.M. — posición original del MUESTRA
     c.setFont(F2, 9.941)
-    c.drawString(322.20, yt(284.07), f"Dr. {medico}")
+    c.drawString(322.20, yt(293.07), f"Dr. {medico}")
     c.setFont(F2, 8.983)
-    c.drawString(322.20, yt(296.11), f"Reg.M. {tarjeta_profesional}")
+    c.drawString(322.20, yt(305.11), f"Reg.M. {tarjeta_profesional}")
 
     c.save()
     log(f"  → PDF generado directamente (reportlab)", "info")
