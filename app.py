@@ -599,6 +599,8 @@ def generar_pdf_directo(datos_api, no_cuenta, ruta_png_firma, session_dir) -> Pa
     FIRMA_MAX_W = 5.5*cm
     FIRMA_MAX_H = 1.8*cm
     FIRMA_Y     = sy - 0.65*cm - FIRMA_MAX_H
+    # Inicializar variables de dimensiones de firma (para uso posterior)
+    fw = 0; fh = 0; fx = ZONA_X; fy = FIRMA_Y
 
     if ruta_png_firma and ruta_png_firma.exists():
         try:
@@ -616,10 +618,13 @@ def generar_pdf_directo(datos_api, no_cuenta, ruta_png_firma, session_dir) -> Pa
         except Exception as e:
             log(f"  → Firma PDF error: {e}", "warn")
 
-    # ── LÍNEA HORIZONTAL ───────────────────────────────────────────────
-    LINE_Y = FIRMA_Y - 0.2*cm
+    # ── LÍNEA HORIZONTAL (solo debajo de la imagen de firma) ───────────
+    LINE_Y = FIRMA_Y - 0.18*cm
     c.setLineWidth(0.6)
-    c.line(ZONA_X, LINE_Y, W - MR, LINE_Y)
+    # La línea tiene el mismo ancho que la imagen de firma, centrada
+    line_start_x = fx
+    line_end_x   = fx + fw
+    c.line(line_start_x, LINE_Y, line_end_x, LINE_Y)
 
     # ── DR. + REG.M.: Liberation Sans Regular 10pt ─────────────────────
     c.setFont(BODY_R, FS)
