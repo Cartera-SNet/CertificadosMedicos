@@ -469,6 +469,168 @@ def _colapsar_runs(parrafo):
     if italic is not None: run_nuevo.italic = italic
 
 
+
+# ─────────────────────────────────────────────────────────────
+# GENERACIÓN DIRECTA DE PDF CON REPORTLAB
+# Layout idéntico al PDF de referencia (MUESTRA.pdf)
+# Sin Word ni LibreOffice — funciona igual en Windows y Railway
+# ─────────────────────────────────────────────────────────────
+def generar_pdf_directo(datos_api, no_cuenta, ruta_png_firma, session_dir) -> Path:
+    """
+    Genera el certificado PDF directamente con reportlab.
+    Fuentes exactas del FORMATO.docx:
+      - Título (Cambria Bold)  → Liberation Serif Bold
+      - Cuerpo (Calibri)       → Liberation Sans Regular/Bold
+    """
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import cm
+    from reportlab.pdfgen import canvas
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    W, H = A4
+    ML = 1.5*cm; MR = 1.5*cm; MT = 1.5*cm
+    TW = W - ML - MR
+
+    # ── Registrar fuentes Liberation (equivalentes a Cambria/Calibri) ──
+    FDIR = "/usr/share/fonts/truetype/liberation"
+    try:
+        pdfmetrics.registerFont(TTFont("BodyR", f"{FDIR}/LiberationSans-Regular.ttf"))
+        pdfmetrics.registerFont(TTFont("BodyB", f"{FDIR}/LiberationSans-Bold.ttf"))
+        pdfmetrics.registerFont(TTFont("TitleB",f"{FDIR}/LiberationSerif-Bold.ttf"))
+        BODY_R = "BodyR"; BODY_B = "BodyB"; TITLE_B = "TitleB"
+    except Exception:
+        BODY_R = "Helvetica"; BODY_B = "Helvetica-Bold"; TITLE_B = "Helvetica-Bold"
+
+    FS    = 10   # body font size pts
+    FS_T  = 12   # title font size pts
+    LH    = 14   # line height pts
+    PAD_H = 0.28*cm
+    PAD_V = 0.32*cm
+
+    nombre_empresa      = str(datos_api.get("nombre_empresa", ""))
+    paciente            = str(datos_api.get("Paciente", ""))
+    tipo_documento      = str(datos_api.get("TipoDocumento", ""))
+    sexo                = str(datos_api.get("sexo", ""))
+    cod_servicio        = str(datos_api.get("CodServicio", ""))
+    nom_servicio        = str(datos_api.get("NomServicio", ""))
+    edad                = str(int(float(datos_api.get("Edad", 0))))
+    medida_edad         = str(datos_api.get("Medida_Edad", ""))
+    fecha_nac           = formatear_fecha_nac(str(datos_api.get("Fecha_Nac", "")))
+    fecha_ingreso       = str(datos_api.get("Fecha_Ingreso", ""))
+    medico              = str(datos_api.get("Medico", ""))
+    tarjeta_profesional = str(datos_api.get("Tarjeta_Profesional", ""))
+
+    pdf_path = session_dir / f"CM_{no_cuenta}.pdf"
+    c = canvas.Canvas(str(pdf_path), pagesize=A4)
+
+    def wrap_text(text, font, size, max_w):
+        """Divide texto en líneas que caben en max_w. Retorna lista de líneas."""
+        words = text.split()
+        lines = []; line = ""
+        for word in words:
+            test = (line + " " + word).strip()
+            if c.stringWidth(test, font, size) <= max_w:
+                line = test
+            else:
+                if line: lines.append(line)
+                line = word
+        if line: lines.append(line)
+        return lines if lines else [text]
+
+    # ── TÍTULO: Liberation Serif Bold 12pt, centrado ───────────────────
+    y = H - MT - 0.65*cm
+    c.setFont(TITLE_B, FS_T)
+    c.drawCentredString(W/2, y, "CERTIFICADO DE ATENCION MEDICA PARA VICTIMAS DE")
+    y -= 15
+    c.drawCentredString(W/2, y, "ACCIDENTES DE TRÁNSITO")
+
+    # ── CUADRO ─────────────────────────────────────────────────────────
+    # Línea 1+2: intro + "Señor(a) PACIENTE" en misma cadena con wrap
+    c.setFont(BODY_R, FS)
+    BOX_W = TW - 2*PAD_H
+    intro = (f"El suscrito médico de la Institución Prestadora de Servicios  "
+             f"{nombre_empresa} certifica que atendió a: Señor(a)   {paciente}")
+    intro_lines = wrap_text(intro, BODY_R, FS, BOX_W)
+
+    # Altura cuadro: intro_lines + 1 vacía + 3 datos + 2*pad
+    BOX_H  = PAD_V + len(intro_lines)*LH + LH + 3*LH + PAD_V
+    BOX_TOP = y - 0.4*cm
+    BOX_Y   = BOX_TOP - BOX_H
+
+    c.setLineWidth(0.8)
+    c.roundRect(ML, BOX_Y, TW, BOX_H, 5, stroke=1, fill=0)
+
+    # Texto intro
+    iy = BOX_TOP - PAD_V
+    for linea in intro_lines:
+        c.drawString(ML + PAD_H, iy, linea)
+        iy -= LH
+
+    # Línea vacía
+    iy -= LH
+
+    # Columnas al 52%
+    C2 = ML + TW * 0.52
+
+    c.drawString(ML + PAD_H, iy, f"Identificación:  {tipo_documento}")
+    c.drawString(C2,          iy, f"Edad:  {edad} {medida_edad}")
+    iy -= LH
+
+    c.drawString(ML + PAD_H, iy, f"Sexo:  {sexo}")
+    c.drawString(C2,          iy, f"Fecha Nacimiento:  {fecha_nac}")
+    iy -= LH
+
+    c.drawString(ML + PAD_H, iy, f"Servicio Ingreso:  {cod_servicio} - {nom_servicio}")
+    c.drawString(C2,          iy, f"Fecha y hora ingreso:  {fecha_ingreso}")
+
+    # ── EL SUSCRITO: Liberation Sans Bold 10pt, centrado ───────────────
+    sy = BOX_Y - 0.55*cm
+    c.setFont(BODY_B, FS)
+    c.drawCentredString(W/2, sy,
+        "EL SUSCRITO MEDICO CERTIFICA LA RELACION CAUSAL DIRECTA ENTRE LAS LESIONES QUE")
+    sy -= LH
+    c.drawCentredString(W/2, sy,
+        "PRESENTA EL PACIENTE Y EL ACCIDENTE DE TRANSITO.")
+
+    # ── FIRMA ──────────────────────────────────────────────────────────
+    ZONA_X      = W/2
+    ZONA_W      = W - MR - ZONA_X
+    FIRMA_MAX_W = 5.5*cm
+    FIRMA_MAX_H = 1.8*cm
+    FIRMA_Y     = sy - 0.65*cm - FIRMA_MAX_H
+
+    if ruta_png_firma and ruta_png_firma.exists():
+        try:
+            from PIL import Image as _PI
+            img = _PI.open(str(ruta_png_firma))
+            iw, ih = img.size
+            ratio = iw / ih if ih > 0 else 2.5
+            fw = min(FIRMA_MAX_W, FIRMA_MAX_H * ratio)
+            fh = fw / ratio
+            if fh > FIRMA_MAX_H:
+                fh = FIRMA_MAX_H; fw = fh * ratio
+            fx = ZONA_X + (ZONA_W - fw) / 2
+            fy = FIRMA_Y + (FIRMA_MAX_H - fh) / 2
+            c.drawImage(str(ruta_png_firma), fx, fy, fw, fh, mask="auto")
+        except Exception as e:
+            log(f"  → Firma PDF error: {e}", "warn")
+
+    # ── LÍNEA HORIZONTAL ───────────────────────────────────────────────
+    LINE_Y = FIRMA_Y - 0.2*cm
+    c.setLineWidth(0.6)
+    c.line(ZONA_X, LINE_Y, W - MR, LINE_Y)
+
+    # ── DR. + REG.M.: Liberation Sans Regular 10pt ─────────────────────
+    c.setFont(BODY_R, FS)
+    dy = LINE_Y - 0.42*cm
+    c.drawString(ZONA_X, dy, f"Dr. {medico}")
+    dy -= 0.4*cm
+    c.drawString(ZONA_X, dy, f"Reg.M. {tarjeta_profesional}")
+
+    c.save()
+    log(f"  → PDF generado directamente (reportlab)", "info")
+    return pdf_path
 def generar_docx(datos_api, no_cuenta, ruta_png_firma, session_dir) -> Path:
     """
     Copia FORMATO.docx, reemplaza variables en text boxes y cuerpo,
@@ -846,22 +1008,17 @@ def ejecutar_proceso(casos, config, session_dir, completadas_previas):
                     else:
                         log(f"  → Campo FirmaMedico vacío en respuesta API", "warn")
 
-                    # 3. Generar DOCX
-                    log(f"  → Generando documento...", "info")
-                    ruta_docx = generar_docx(datos, no_cuenta, ruta_firma_png, session_dir)
+                    # 3. Generar PDF directamente con reportlab
+                    log(f"  → Generando PDF...", "info")
+                    ruta_pdf_raw = generar_pdf_directo(datos, no_cuenta, ruta_firma_png, session_dir)
 
-                    # Liberar PNG de firma ANTES de convertir a PDF
-                    # Word en Windows bloquea archivos abiertos durante docx2pdf
+                    # Liberar PNG de firma
                     if ruta_firma_png and ruta_firma_png.exists():
                         try:
                             ruta_firma_png.unlink()
                         except Exception:
                             pass
                         ruta_firma_png = None
-
-                    # 4. Convertir a PDF
-                    log(f"  → Convirtiendo a PDF...", "info")
-                    ruta_pdf_raw = docx_a_pdf(ruta_docx, session_dir)
 
                     # 5. Renombrar PDF como CM_{NoFactura}
                     pdf_final = session_dir / f"CM_{nombre_pdf}.pdf"
