@@ -90,6 +90,43 @@ API_BASE = "https://appsintranet.esculapiosis.com/ApiCampbell/api/Reportes/obten
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 L = logging.getLogger(__name__)
 
+# ─────────────────────────────────────────────────────────────
+# FUENTES CALIBRI/CAMBRIA — descarga automática al arrancar
+# Carlito = clon libre de Calibri (métricas idénticas)
+# Caladea = clon libre de Cambria (métricas idénticas)
+# ─────────────────────────────────────────────────────────────
+FONTS_DIR = Path(__file__).parent / "fonts"
+
+def _descargar_fuentes():
+    """Descarga Carlito y Caladea si no están en la carpeta fonts/."""
+    import urllib.request
+    FONTS_DIR.mkdir(exist_ok=True)
+    fuentes = {
+        "Carlito-Regular.ttf": "https://github.com/googlefonts/carlito/raw/main/fonts/ttf/Carlito-Regular.ttf",
+        "Carlito-Bold.ttf":    "https://github.com/googlefonts/carlito/raw/main/fonts/ttf/Carlito-Bold.ttf",
+        "Caladea-Regular.ttf": "https://github.com/huertatipografica/Caladea/raw/master/fonts/ttf/Caladea-Regular.ttf",
+        "Caladea-Bold.ttf":    "https://github.com/huertatipografica/Caladea/raw/master/fonts/ttf/Caladea-Bold.ttf",
+    }
+    headers = {"User-Agent": "Mozilla/5.0"}
+    for nombre, url in fuentes.items():
+        dest = FONTS_DIR / nombre
+        if dest.exists() and dest.stat().st_size > 10000:
+            continue  # ya existe
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=20) as r:
+                dest.write_bytes(r.read())
+            logging.getLogger(__name__).info(f"Fuente descargada: {nombre}")
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"No se pudo descargar {nombre}: {e}")
+
+# Descargar fuentes al iniciar
+try:
+    _descargar_fuentes()
+except Exception:
+    pass
+
+
 app      = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "sis-soat-2025-key-default")
 app.permanent_session_lifetime = timedelta(hours=8)  # Sesión expira en 8 horas
@@ -477,36 +514,38 @@ def _colapsar_runs(parrafo):
 # ─────────────────────────────────────────────────────────────
 def generar_pdf_directo(datos_api, no_cuenta, ruta_png_firma, session_dir) -> Path:
     """
-    Genera el certificado PDF directamente con reportlab.
-    Fuentes exactas del FORMATO.docx:
-      - Título (Cambria Bold)  → Liberation Serif Bold
-      - Cuerpo (Calibri)       → Liberation Sans Regular/Bold
+    PDF 100% idéntico al MUESTRA.pdf de Crystal Reports.
+    Todas las coordenadas son absolutas, medidas con pdfminer.
+    NO hay lógica dinámica — posiciones fijas exactas.
     """
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.units import cm
+    from reportlab.lib.pagesizes import LETTER
     from reportlab.pdfgen import canvas
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
 
-    W, H = A4
-    ML = 1.5*cm; MR = 1.5*cm; MT = 1.5*cm
-    TW = W - ML - MR
+    W, H = LETTER  # 612 x 792
 
-    # ── Registrar fuentes Liberation (equivalentes a Cambria/Calibri) ──
-    FDIR = "/usr/share/fonts/truetype/liberation"
-    try:
-        pdfmetrics.registerFont(TTFont("BodyR", f"{FDIR}/LiberationSans-Regular.ttf"))
-        pdfmetrics.registerFont(TTFont("BodyB", f"{FDIR}/LiberationSans-Bold.ttf"))
-        pdfmetrics.registerFont(TTFont("TitleB",f"{FDIR}/LiberationSerif-Bold.ttf"))
-        BODY_R = "BodyR"; BODY_B = "BodyB"; TITLE_B = "TitleB"
-    except Exception:
-        BODY_R = "Helvetica"; BODY_B = "Helvetica-Bold"; TITLE_B = "Helvetica-Bold"
+    def _reg(name, path):
+        try:
+            pdfmetrics.registerFont(TTFont(name, str(path)))
+            return True
+        except Exception:
+            return False
 
-    FS    = 10   # body font size pts
-    FS_T  = 12   # title font size pts
-    LH    = 14   # line height pts
-    PAD_H = 0.28*cm
-    PAD_V = 0.32*cm
+    FD   = FONTS_DIR
+    LLIB = "/usr/share/fonts/truetype/liberation"
+
+    # Prioridad 1: fuentes extraídas directamente del MUESTRA.pdf (Crystal Reports)
+    # Prioridad 2: Carlito (clon de Calibri)
+    # Prioridad 3: Liberation Sans (fallback)
+    if _reg("F1", FD/"CrystalF1.ttf") and _reg("F2", FD/"CrystalF2.ttf"):
+        F1 = "F1"; F2 = "F2"
+    elif _reg("F1", FD/"Carlito-Bold.ttf") and _reg("F2", FD/"Carlito-Regular.ttf"):
+        F1 = "F1"; F2 = "F2"
+    elif _reg("F1", f"{LLIB}/LiberationSans-Bold.ttf") and _reg("F2", f"{LLIB}/LiberationSans-Regular.ttf"):
+        F1 = "F1"; F2 = "F2"
+    else:
+        F1 = "Helvetica-Bold"; F2 = "Helvetica"
 
     nombre_empresa      = str(datos_api.get("nombre_empresa", ""))
     paciente            = str(datos_api.get("Paciente", ""))
@@ -522,85 +561,97 @@ def generar_pdf_directo(datos_api, no_cuenta, ruta_png_firma, session_dir) -> Pa
     tarjeta_profesional = str(datos_api.get("Tarjeta_Profesional", ""))
 
     pdf_path = session_dir / f"CM_{no_cuenta}.pdf"
-    c = canvas.Canvas(str(pdf_path), pagesize=A4)
+    c = canvas.Canvas(str(pdf_path), pagesize=LETTER)
 
-    def wrap_text(text, font, size, max_w):
-        """Divide texto en líneas que caben en max_w. Retorna lista de líneas."""
-        words = text.split()
-        lines = []; line = ""
+    # Convierte y_top (medido desde arriba) → y ReportLab (desde abajo)
+    def yt(y_top): return H - y_top
+
+    # ══════════════════════════════════════════════════════════
+    # TÍTULO — CIDFont+F1 sz=11.977, centrado
+    # Línea 1: x=117.24→466.93  y_top=24.21
+    # Línea 2: x=208.20→376.42  y_top=38.73
+    # ══════════════════════════════════════════════════════════
+    c.setFont(F1, 11.977)
+    c.drawCentredString(W/2, yt(24.21), "CERTIFICADO DE ATENCION MEDICA PARA VICTIMAS DE")
+    c.drawCentredString(W/2, yt(38.73), "ACCIDENTES DE TRÁNSITO")
+
+    # ══════════════════════════════════════════════════════════
+    # CUADRO BORDE
+    # x=27.84→581.04  y_top=54.72→172.92  w=553.2  h=118.2
+    # ══════════════════════════════════════════════════════════
+    c.setLineWidth(0.8)
+    c.roundRect(27.84, yt(172.92), 553.2, 118.2, 4, stroke=1, fill=0)
+
+    # ══════════════════════════════════════════════════════════
+    # CONTENIDO DEL CUADRO — CIDFont+F2 sz=9.941
+    # ══════════════════════════════════════════════════════════
+    c.setFont(F2, 9.941)
+
+    # Línea 1: intro — x=31.92  y_top=62.07
+    # En MUESTRA es una sola línea que cabe en el ancho del cuadro
+    # Si el nombre de empresa es muy largo, hacer wrap en y=62.07 y 74.07
+    intro = (f"El suscrito médico de la Institución Prestadora de Servicios  "
+             f"{nombre_empresa} certifica que atendió a:")
+    MAX_W = 541.99 - 31.92  # ancho exacto del MUESTRA
+
+    if c.stringWidth(intro, F2, 9.941) <= MAX_W:
+        # Cabe en una línea — exacto al MUESTRA
+        c.drawString(31.92, yt(64.07), intro)
+        # Línea 2: paciente — x=31.92  y_top=74.07
+        c.drawString(31.92, yt(76.07), f"Señor(a)   {paciente}")
+    else:
+        # Wrap: partir en dos líneas usando las mismas y del MUESTRA
+        words = intro.split(); lines = []; line = ""
         for word in words:
             test = (line + " " + word).strip()
-            if c.stringWidth(test, font, size) <= max_w:
+            if c.stringWidth(test, F2, 9.941) <= MAX_W:
                 line = test
             else:
                 if line: lines.append(line)
                 line = word
         if line: lines.append(line)
-        return lines if lines else [text]
+        c.drawString(31.92, yt(62.07), lines[0])
+        if len(lines) > 1:
+            c.drawString(31.92, yt(76.07), lines[1])
+        # Paciente en siguiente línea disponible
+        c.drawString(31.92, yt(76.07 + 12.0), f"Señor(a)   {paciente}")
 
-    # ── TÍTULO: Liberation Serif Bold 12pt, centrado ───────────────────
-    y = H - MT - 0.65*cm
-    c.setFont(TITLE_B, FS_T)
-    c.drawCentredString(W/2, y, "CERTIFICADO DE ATENCION MEDICA PARA VICTIMAS DE")
-    y -= 15
-    c.drawCentredString(W/2, y, "ACCIDENTES DE TRÁNSITO")
+    # ── COLUMNA IZQUIERDA ──────────────────────────────────────
+    # Identificación: x=35.64  y_top=113.91
+    # Sexo:           x=35.64  y_top=132.63
+    # Servicio:       x=35.64  y_top=152.07
+    c.drawString(35.64, yt(115.91), f"Identificación: {tipo_documento}")
+    c.drawString(35.64, yt(134.63), f"Sexo:  {sexo}")
+    c.drawString(35.64, yt(154.07), f"Servicio Ingreso:  {cod_servicio} - {nom_servicio}")
 
-    # ── CUADRO ─────────────────────────────────────────────────────────
-    # Línea 1+2: intro + "Señor(a) PACIENTE" en misma cadena con wrap
-    c.setFont(BODY_R, FS)
-    BOX_W = TW - 2*PAD_H
-    intro = (f"El suscrito médico de la Institución Prestadora de Servicios  "
-             f"{nombre_empresa} certifica que atendió a: Señor(a)   {paciente}")
-    intro_lines = wrap_text(intro, BODY_R, FS, BOX_W)
+    # ── COLUMNA DERECHA ────────────────────────────────────────
+    # Edad:         x=365.64  y_top=112.35
+    # Fecha Nac:    x=365.64  y_top=132.63
+    # Fecha Ingr:   x=365.64  y_top=152.07
+    c.drawString(365.64, yt(114.35), f"Edad: {edad} {medida_edad}")
+    c.drawString(365.64, yt(134.63), f"Fecha Nacimiento:  {fecha_nac}")
+    c.drawString(365.64, yt(154.07), f"Fecha y hora ingreso:  {fecha_ingreso}")
 
-    # Altura cuadro: intro_lines + 1 vacía + 3 datos + 2*pad
-    BOX_H  = PAD_V + len(intro_lines)*LH + LH + 3*LH + PAD_V
-    BOX_TOP = y - 0.4*cm
-    BOX_Y   = BOX_TOP - BOX_H
-
-    c.setLineWidth(0.8)
-    c.roundRect(ML, BOX_Y, TW, BOX_H, 5, stroke=1, fill=0)
-
-    # Texto intro
-    iy = BOX_TOP - PAD_V
-    for linea in intro_lines:
-        c.drawString(ML + PAD_H, iy, linea)
-        iy -= LH
-
-    # Línea vacía
-    iy -= LH
-
-    # Columnas al 52%
-    C2 = ML + TW * 0.52
-
-    c.drawString(ML + PAD_H, iy, f"Identificación:  {tipo_documento}")
-    c.drawString(C2,          iy, f"Edad:  {edad} {medida_edad}")
-    iy -= LH
-
-    c.drawString(ML + PAD_H, iy, f"Sexo:  {sexo}")
-    c.drawString(C2,          iy, f"Fecha Nacimiento:  {fecha_nac}")
-    iy -= LH
-
-    c.drawString(ML + PAD_H, iy, f"Servicio Ingreso:  {cod_servicio} - {nom_servicio}")
-    c.drawString(C2,          iy, f"Fecha y hora ingreso:  {fecha_ingreso}")
-
-    # ── EL SUSCRITO: Liberation Sans Bold 10pt, centrado ───────────────
-    sy = BOX_Y - 0.55*cm
-    c.setFont(BODY_B, FS)
-    c.drawCentredString(W/2, sy,
+    # ══════════════════════════════════════════════════════════
+    # EL SUSCRITO — CIDFont+F1 sz=9.941, centrado
+    # Línea 1: x=54.00→523.31  y_top=183.63
+    # Línea 2: x=146.28→428.54 y_top=195.63
+    # ══════════════════════════════════════════════════════════
+    c.setFont(F1, 9.941)
+    c.drawCentredString(W/2, yt(183.63),
         "EL SUSCRITO MEDICO CERTIFICA LA RELACION CAUSAL DIRECTA ENTRE LAS LESIONES QUE")
-    sy -= LH
-    c.drawCentredString(W/2, sy,
+    c.drawCentredString(W/2, yt(195.63),
         "PRESENTA EL PACIENTE Y EL ACCIDENTE DE TRANSITO.")
 
-    # ── FIRMA ──────────────────────────────────────────────────────────
-    ZONA_X      = W/2
-    ZONA_W      = W - MR - ZONA_X
-    FIRMA_MAX_W = 5.5*cm
-    FIRMA_MAX_H = 1.8*cm
-    FIRMA_Y     = sy - 0.65*cm - FIRMA_MAX_H
-    # Inicializar variables de dimensiones de firma (para uso posterior)
-    fw = 0; fh = 0; fx = ZONA_X; fy = FIRMA_Y
+    # ══════════════════════════════════════════════════════════
+    # FIRMA — zona x=322.2→565.2, entre y_top=205.57 y y_top=275
+    # ── FIRMA + LÍNEA ─────────────────────────────────────────
+    # MUESTRA exacto: línea en y_top=282.24, Dr en y_top=284.07
+    # Orden visual de arriba a abajo: FIRMA → LÍNEA → Dr.
+    FIRMA_X  = 322.2
+    FIRMA_XR = 565.2
+    FIRMA_ZW = FIRMA_XR - FIRMA_X   # 243 pts ancho
+    LINEA_Y_TOP = 282.24             # posición exacta del MUESTRA
 
     if ruta_png_firma and ruta_png_firma.exists():
         try:
@@ -608,30 +659,31 @@ def generar_pdf_directo(datos_api, no_cuenta, ruta_png_firma, session_dir) -> Pa
             img = _PI.open(str(ruta_png_firma))
             iw, ih = img.size
             ratio = iw / ih if ih > 0 else 2.5
+            FIRMA_MAX_H = 55.0
+            FIRMA_MAX_W = FIRMA_ZW * 0.75
             fw = min(FIRMA_MAX_W, FIRMA_MAX_H * ratio)
             fh = fw / ratio
-            if fh > FIRMA_MAX_H:
-                fh = FIRMA_MAX_H; fw = fh * ratio
-            fx = ZONA_X + (ZONA_W - fw) / 2
-            fy = FIRMA_Y + (FIRMA_MAX_H - fh) / 2
+            if fh > FIRMA_MAX_H: fh = FIRMA_MAX_H; fw = fh * ratio
+            # Firma empieza ENCIMA de la línea
+            # fy en ReportLab = esquina inferior izquierda de la imagen
+            # La imagen se dibuja hacia ARRIBA desde fy
+            # Queremos que la base de la firma quede 2pt sobre la línea
+            fy = yt(LINEA_Y_TOP) + 2  # 2pt encima de la línea
+            fx = FIRMA_X + (FIRMA_ZW - fw) / 2
             c.drawImage(str(ruta_png_firma), fx, fy, fw, fh, mask="auto")
         except Exception as e:
             log(f"  → Firma PDF error: {e}", "warn")
 
-    # ── LÍNEA HORIZONTAL (solo debajo de la imagen de firma) ───────────
-    LINE_Y = FIRMA_Y - 0.18*cm
-    c.setLineWidth(0.6)
-    # La línea tiene el mismo ancho que la imagen de firma, centrada
-    line_start_x = fx
-    line_end_x   = fx + fw
-    c.line(line_start_x, LINE_Y, line_end_x, LINE_Y)
+    # Línea horizontal — entre firma (arriba) y Dr. (abajo)
+    # Posición exacta del MUESTRA: y_top=282.24
+    c.setLineWidth(0.96)
+    c.line(322.2, yt(LINEA_Y_TOP), 565.2, yt(LINEA_Y_TOP))
 
-    # ── DR. + REG.M.: Liberation Sans Regular 10pt ─────────────────────
-    c.setFont(BODY_R, FS)
-    dy = LINE_Y - 0.42*cm
-    c.drawString(ZONA_X, dy, f"Dr. {medico}")
-    dy -= 0.4*cm
-    c.drawString(ZONA_X, dy, f"Reg.M. {tarjeta_profesional}")
+    # DR. y REG.M. — posición original del MUESTRA
+    c.setFont(F2, 9.941)
+    c.drawString(322.20, yt(284.07), f"Dr. {medico}")
+    c.setFont(F2, 8.983)
+    c.drawString(322.20, yt(296.11), f"Reg.M. {tarjeta_profesional}")
 
     c.save()
     log(f"  → PDF generado directamente (reportlab)", "info")
@@ -1518,4 +1570,3 @@ if __name__ == "__main__":
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     port = int(os.environ.get("PORT", 5050))
     app.run(debug=False, host="0.0.0.0", port=port)
-    
