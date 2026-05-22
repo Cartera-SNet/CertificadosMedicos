@@ -1030,10 +1030,6 @@ def ejecutar_proceso(casos, config, session_dir, completadas_previas):
                     # 6. Agregar al ZIP
                     zipf.write(pdf_final, arcname=f"CM_{nombre_pdf}.pdf")
 
-                    # 7. Limpiar DOCX temporal
-                    if ruta_docx.exists():
-                        ruta_docx.unlink()
-
                     success = True
                     log(f"  ✓ CM_{nombre_pdf}.pdf generado", "ok")
                     break
