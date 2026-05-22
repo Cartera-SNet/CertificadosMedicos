@@ -160,6 +160,15 @@
                 <i class="fas fa-server text-indigo-400 text-xs"></i>
                 <span id="serverBadgeText" class="text-xs text-indigo-300 font-medium"></span>
             </div>
+            <!-- Usuario + Logout -->
+            <div class="flex items-center gap-2 ml-2 pl-2 border-l border-gray-200">
+                <span id="headerUsuario" class="text-xs text-gray-500 font-medium hidden sm:block"></span>
+                <button onclick="cerrarSesion()" title="Cerrar sesión"
+                        class="text-xs text-gray-400 hover:text-red-500 transition-colors px-2 py-1 rounded-lg hover:bg-red-50 flex items-center gap-1">
+                    <i class="fas fa-sign-out-alt"></i>
+                    <span class="hidden sm:inline">Salir</span>
+                </button>
+            </div>
         </div>
     </div>
 </header>
@@ -858,6 +867,40 @@ setStatus('idle');
 reiniciarCronometro();
 cargarServidores();
 checkSesionPendiente();
+</script>
+
+<script>
+// ── Logout ──────────────────────────────────────────────────
+async function cerrarSesion() {
+    if (!confirm('¿Cerrar sesión?')) return;
+    await fetch('/api/auth/logout', { method: 'POST' });
+    window.location.href = '/login';
+}
+
+// Cargar usuario actual en header
+fetch('/api/auth/me').then(r => r.json()).then(d => {
+    if (d.autenticado && d.usuario) {
+        const el = document.getElementById('headerUsuario');
+        if (el) { el.textContent = d.usuario; el.classList.remove('hidden'); }
+    }
+}).catch(() => {});
+
+// Interceptar respuestas 401 globalmente → redirigir a login
+const _origFetch = window.fetch;
+window.fetch = async function(...args) {
+    const res = await _origFetch(...args);
+    if (res.status === 401) {
+        const clone = res.clone();
+        try {
+            const data = await clone.json();
+            if (data.login_required) {
+                window.location.href = '/login';
+                return res;
+            }
+        } catch(e) {}
+    }
+    return res;
+};
 </script>
 </body>
 </html>

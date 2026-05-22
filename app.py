@@ -4,12 +4,12 @@ Migración API REST — SIS / Esculapio Soft
 """
 
 import os, csv, time, threading, zipfile, logging, json, shutil, re, base64, tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from io import BytesIO
 from copy import deepcopy
 
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify, send_file, session, redirect, url_for
 
 try:
     import requests as req_lib
@@ -91,7 +91,18 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 L = logging.getLogger(__name__)
 
 app      = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "sis-soat-2025-key-default")
+app.permanent_session_lifetime = timedelta(hours=8)  # Sesión expira en 8 horas
 BASE_DIR = Path(__file__).parent
+
+# ── HTTPS forzado (solo activo en Railway/producción) ──────────────────
+@app.before_request
+def forzar_https():
+    """Redirige HTTP → HTTPS cuando corre detrás del proxy de Railway."""
+    proto = request.headers.get("X-Forwarded-Proto", "")
+    if proto == "http":
+        url = request.url.replace("http://", "https://", 1)
+        return redirect(url, code=301)
 FORMATO  = BASE_DIR / "FORMATO.docx"
 DOWNLOAD_DIR = BASE_DIR / "downloads"
 DOWNLOAD_DIR.mkdir(exist_ok=True)
@@ -127,6 +138,82 @@ def reset():
             "session_dir": None, "completadas": set(),
             "exitosos": [], "errores": [],
         })
+
+# ─────────────────────────────────────────────────────────────
+# AUTENTICACIÓN
+# ─────────────────────────────────────────────────────────────
+def get_users():
+    """
+    Lee usuarios desde variable de entorno BOT_USERS.
+    Formato JSON: {"admin": "password123", "usuario1": "clave456"}
+    Si no existe, usa usuario por defecto: admin / soat2025
+    """
+    raw = os.environ.get("BOT_USERS", "")
+    if raw:
+        try:
+            return json.loads(raw)
+        except Exception:
+            pass
+    return {"admin": os.environ.get("BOT_PASSWORD", "soat2025")}
+
+# Almacén de intentos fallidos por IP: {ip: {"intentos": N, "bloqueado_hasta": timestamp}}
+_login_intentos = {}
+_LOGIN_MAX_INTENTOS = 5      # máximo intentos fallidos
+_LOGIN_VENTANA_SEG  = 600    # ventana de 10 minutos
+_LOGIN_BLOQUEO_SEG  = 900    # bloqueo de 15 minutos
+
+def _check_rate_limit(ip):
+    """
+    Verifica si la IP está bloqueada.
+    Retorna (permitido: bool, mensaje: str, segundos_restantes: int)
+    """
+    ahora = time.time()
+    datos = _login_intentos.get(ip, {})
+
+    bloqueado_hasta = datos.get("bloqueado_hasta", 0)
+    if bloqueado_hasta > ahora:
+        restantes = int(bloqueado_hasta - ahora)
+        minutos   = restantes // 60
+        return False, f"IP bloqueada. Intenta en {minutos} min {restantes%60} seg.", restantes
+
+    # Limpiar si la ventana expiró
+    primer_intento = datos.get("primer_intento", 0)
+    if ahora - primer_intento > _LOGIN_VENTANA_SEG:
+        _login_intentos.pop(ip, None)
+
+    return True, "", 0
+
+def _registrar_intento_fallido(ip):
+    """Registra un intento fallido y bloquea si supera el límite."""
+    ahora = time.time()
+    datos = _login_intentos.get(ip, {})
+
+    if not datos or ahora - datos.get("primer_intento", 0) > _LOGIN_VENTANA_SEG:
+        datos = {"intentos": 0, "primer_intento": ahora}
+
+    datos["intentos"] += 1
+
+    if datos["intentos"] >= _LOGIN_MAX_INTENTOS:
+        datos["bloqueado_hasta"] = ahora + _LOGIN_BLOQUEO_SEG
+        log(f"IP {ip} bloqueada por {_LOGIN_BLOQUEO_SEG//60} min ({datos['intentos']} intentos fallidos)", "warn")
+
+    _login_intentos[ip] = datos
+
+def _registrar_login_exitoso(ip):
+    """Limpia el contador de intentos tras login exitoso."""
+    _login_intentos.pop(ip, None)
+
+def login_requerido(f):
+    """Decorador que protege rutas — redirige a /login si no autenticado."""
+    from functools import wraps
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("autenticado"):
+            if request.is_json or request.path.startswith("/api/"):
+                return jsonify({"error": "No autorizado", "login_required": True}), 401
+            return redirect(url_for("login_page"))
+        return f(*args, **kwargs)
+    return decorated
 
 # ─────────────────────────────────────────────────────────────
 # PERSISTENCIA (reanudación)
@@ -446,19 +533,42 @@ def generar_docx(datos_api, no_cuenta, ruta_png_firma, session_dir) -> Path:
 
         # ── Eliminar space_before exagerado de párrafos vacíos alrededor de la firma ──
         # Párrafos 13 (space=129 twips) y 15 (space=104 twips) crean el hueco grande
+        # ── Ajustar spacing de TODOS los párrafos vacíos del documento ──────
+        # El FORMATO.docx original tiene:
+        # - P15-P22: 8 empty paras (8 líneas de espacio innecesario)
+        # - P23: before=202 twips (enorme)
+        # - P25: before=129 twips (antes de firma)
+        # - P27: before=104 twips (después de firma)
+        # Los corregimos desde código sin tocar el DOCX
+        for para in doc.paragraphs:
+            if para.text.strip():
+                continue  # solo párrafos vacíos
+            pPr = para._p.find(f'{{{W_NS}}}pPr')
+            if pPr is None:
+                continue
+            sp = pPr.find(f'{{{W_NS}}}spacing')
+            if sp is None:
+                continue
+            before_val = int(sp.get(f'{{{W_NS}}}before', '0'))
+            if before_val > 100:
+                # Reducir valores grandes a moderados
+                sp.set(f'{{{W_NS}}}before', '20')
+
+        # Ajuste fino alrededor de la firma
         firma_idx = next((i for i, p in enumerate(doc.paragraphs)
                           if '{FirmaMedico}' in p.text), None)
         if firma_idx is not None:
-            # Ajustar spacing de párrafos vacíos alrededor de la firma
-            # para que quede igual al PDF de referencia (espacio moderado)
-            # Valores originales eran demasiado grandes (202, 129, 104 twips)
-            # Los reducimos a valores proporcionales al PDF de referencia
             spacing_targets = {
-                # FORMATO.docx ya tiene valores reducidos (20/60/40 twips)
-                # Solo ajustamos los que quedan cerca de firma
-                -2: 0,    # empty para antes de firma → zeroed
-                -1: 60,   # P19 (justo antes firma): mantener 60 twips = 0.11cm
-                 1: 40,   # P21 (justo después firma): mantener 40 twips = 0.07cm
+                -9: 0,   # P15-P22 vacíos: zerear (8 empty paras)
+                -8: 0,
+                -7: 0,
+                -6: 0,
+                -5: 0,
+                -4: 0,
+                -3: 0,
+                -2: 0,
+                -1: 60,  # P25 (justo antes firma): 60 twips
+                 1: 40,  # P27 (justo después firma): 40 twips
                  2: 0,
             }
             for offset, target_twips in spacing_targets.items():
@@ -861,11 +971,66 @@ def generar_excel_reporte(session_dir, exitosos, errores) -> Path:
 # ─────────────────────────────────────────────────────────────
 # RUTAS FLASK
 # ─────────────────────────────────────────────────────────────
+@app.route("/login", methods=["GET"])
+def login_page():
+    if session.get("autenticado"):
+        return redirect(url_for("index"))
+    return render_template("login.html")
+
+@app.route("/api/auth/login", methods=["POST"])
+def auth_login():
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
+
+    # Verificar rate limit
+    permitido, msg_bloqueo, _ = _check_rate_limit(ip)
+    if not permitido:
+        return jsonify({"error": msg_bloqueo}), 429
+
+    data     = request.get_json() or {}
+    usuario  = data.get("usuario", "").strip()
+    password = data.get("password", "").strip()
+    if not usuario or not password:
+        return jsonify({"error": "Usuario y contraseña requeridos"}), 400
+
+    users = get_users()
+    if usuario in users and users[usuario] == password:
+        _registrar_login_exitoso(ip)
+        session["autenticado"] = True
+        session["usuario"]     = usuario
+        session.permanent      = True
+        log(f"Login exitoso: {usuario} desde {ip}", "info")
+        return jsonify({"success": True, "usuario": usuario})
+
+    # Login fallido
+    _registrar_intento_fallido(ip)
+    datos_ip = _login_intentos.get(ip, {})
+    intentos  = datos_ip.get("intentos", 1)
+    restantes = max(0, _LOGIN_MAX_INTENTOS - intentos)
+    log(f"Login fallido: usuario='{usuario}' IP={ip} (intento {intentos}/{_LOGIN_MAX_INTENTOS})", "warn")
+
+    if restantes > 0:
+        return jsonify({"error": f"Usuario o contraseña incorrectos. Te quedan {restantes} intento(s)."}), 401
+    else:
+        return jsonify({"error": f"Demasiados intentos fallidos. IP bloqueada por {_LOGIN_BLOQUEO_SEG//60} minutos."}), 429
+
+@app.route("/api/auth/logout", methods=["POST"])
+def auth_logout():
+    session.clear()
+    return jsonify({"success": True})
+
+@app.route("/api/auth/me")
+def auth_me():
+    if session.get("autenticado"):
+        return jsonify({"autenticado": True, "usuario": session.get("usuario", "")})
+    return jsonify({"autenticado": False}), 401
+
 @app.route("/")
+@login_requerido
 def index():
     return render_template("index.html")
 
 @app.route("/api/servidores")
+@login_requerido
 def get_servidores():
     """Devuelve lista de servidores desde la API Esculapio."""
     try:
@@ -887,6 +1052,7 @@ def get_servidores():
 
 
 @app.route("/api/login", methods=["POST"])
+@login_requerido
 def login_usuario():
     """
     Valida credenciales contra la API y devuelve las empresas disponibles.
@@ -932,6 +1098,7 @@ def login_usuario():
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/generar-plantilla")
+@login_requerido
 def gen_plantilla():
     if not EXCEL_OK:
         return jsonify({"error": "openpyxl no instalado"}), 400
@@ -956,6 +1123,7 @@ def gen_plantilla():
                      download_name="plantilla_casos.xlsx")
 
 @app.route("/api/cargar-datos", methods=["POST"])
+@login_requerido
 def cargar_datos():
     try:
         if "file" not in request.files:
@@ -1005,6 +1173,7 @@ def cargar_datos():
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/iniciar", methods=["POST"])
+@login_requerido
 def iniciar():
     with LK:
         if S["running"]:
@@ -1076,6 +1245,7 @@ def iniciar():
     return jsonify({"success": True, "total": len(casos)})
 
 @app.route("/api/detener", methods=["POST"])
+@login_requerido
 def detener():
     with LK:
         S["stopping"] = True
@@ -1083,6 +1253,7 @@ def detener():
     return jsonify({"success": True})
 
 @app.route("/api/estado")
+@login_requerido
 def estado():
     offset = int(request.args.get("offset", 0))
     with LK:
@@ -1099,6 +1270,7 @@ def estado():
         })
 
 @app.route("/api/sesion-pendiente")
+@login_requerido
 def sesion_pendiente_info():
     try:
         sesion = buscar_sesion_pendiente()
@@ -1119,6 +1291,7 @@ def sesion_pendiente_info():
         return jsonify({"existe": False, "error": str(e)})
 
 @app.route("/api/limpiar-progreso", methods=["POST"])
+@login_requerido
 def limpiar_progreso():
     try:
         eliminadas = []
@@ -1133,6 +1306,7 @@ def limpiar_progreso():
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/descargar-zip")
+@login_requerido
 def descargar_zip():
     with LK:
         zp          = S["zip_path"]
