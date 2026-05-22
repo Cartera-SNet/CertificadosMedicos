@@ -499,6 +499,41 @@ def generar_docx(datos_api, no_cuenta, ruta_png_firma, session_dir) -> Path:
     doc = Document(str(ruta_docx))
 
     W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+
+    # ── FIX 1: Centrar título ────────────────────────────────────────────
+    # El estilo Ttulo1 no tiene jc=center definido → LibreOffice lo deja izquierda
+    # Lo forzamos desde código en el párrafo P0
+    import lxml.etree as _etree_init
+    if doc.paragraphs:
+        p0 = doc.paragraphs[0]
+        pPr0 = p0._p.find(f'{{{W_NS}}}pPr')
+        if pPr0 is None:
+            pPr0 = _etree_init.SubElement(p0._p, f'{{{W_NS}}}pPr')
+            p0._p.insert(0, pPr0)
+        jc0 = pPr0.find(f'{{{W_NS}}}jc')
+        if jc0 is None:
+            jc0 = _etree_init.SubElement(pPr0, f'{{{W_NS}}}jc')
+        jc0.set(f'{{{W_NS}}}val', 'center')
+
+    # ── FIX 2: Ampliar text box columna derecha (Fecha y hora ingreso cortada) ──
+    # Shape3 (columna derecha) mide 6.63cm → texto se corta
+    # La ampliamos a 7.8cm desde el código
+    TARGET_CX_EMU = str(int(7.8 / 2.54 * 914400))  # 7.8cm en EMU
+    import lxml.etree as _etree2
+    body_xml = _etree2.tostring(doc.element.body, encoding='unicode')
+    # Count wsp shapes and find Shape3 (index 2, 0-based among wps:wsp)
+    # Shape3 is the right column with Edad/FechaNac/FechaIngreso
+    shapes_found = 0
+    for elem in doc.element.body.iter('{http://schemas.microsoft.com/office/word/2010/wordprocessingShape}wsp'):
+        ext_elem = elem.find('.//{http://schemas.openxmlformats.org/drawingml/2006/main}ext')
+        if ext_elem is not None:
+            cx_val = ext_elem.get('cx', '0')
+            cx_cm = int(cx_val) / 914400 * 2.54
+            # Shape3 is ~6.63cm (right column) - identify by size
+            if 6.0 < cx_cm < 7.0:
+                ext_elem.set('cx', TARGET_CX_EMU)
+                shapes_found += 1
+
     REMOVE_TAGS = {
         f'{{{W_NS}}}r', f'{{{W_NS}}}proofErr',
         f'{{{W_NS}}}bookmarkStart', f'{{{W_NS}}}bookmarkEnd',
@@ -779,6 +814,7 @@ def ejecutar_proceso(casos, config, session_dir, completadas_previas):
                         raise Exception("La API no retornó datos para este caso")
 
                     log(f"  → Paciente: {datos.get('Paciente','?')}", "info")
+                    log(f"  → Medico: {datos.get('Medico','(vacío)')}", "info")
 
                     # 2. Convertir firma (Base64 → PNG)
                     ruta_firma_png = None
