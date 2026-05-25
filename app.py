@@ -535,17 +535,30 @@ def generar_pdf_directo(datos_api, no_cuenta, ruta_png_firma, session_dir) -> Pa
     FD   = FONTS_DIR
     LLIB = "/usr/share/fonts/truetype/liberation"
 
-    # Prioridad 1: fuentes extraídas directamente del MUESTRA.pdf (Crystal Reports)
-    # Prioridad 2: Carlito (clon de Calibri)
-    # Prioridad 3: Liberation Sans (fallback)
-    if _reg("F1", FD/"CrystalF1.ttf") and _reg("F2", FD/"CrystalF2.ttf"):
-        F1 = "F1"; F2 = "F2"
-    elif _reg("F1", FD/"Carlito-Bold.ttf") and _reg("F2", FD/"Carlito-Regular.ttf"):
+    # Fuentes Crystal (mismas del MUESTRA) + Carlito como fallback completo
+    _reg("CR1", FD/"CrystalF1.ttf")
+    _reg("CR2", FD/"CrystalF2.ttf")
+    if _reg("F1", FD/"Carlito-Bold.ttf") and _reg("F2", FD/"Carlito-Regular.ttf"):
         F1 = "F1"; F2 = "F2"
     elif _reg("F1", f"{LLIB}/LiberationSans-Bold.ttf") and _reg("F2", f"{LLIB}/LiberationSans-Regular.ttf"):
         F1 = "F1"; F2 = "F2"
     else:
         F1 = "Helvetica-Bold"; F2 = "Helvetica"
+
+    # Construir charset de Crystal para seleccionar fuente por string
+    try:
+        from fontTools.ttLib import TTFont as _TTFTools
+        _cmap1 = set(_TTFTools(str(FD/"CrystalF1.ttf")).getBestCmap().keys())
+        _cmap2 = set(_TTFTools(str(FD/"CrystalF2.ttf")).getBestCmap().keys())
+    except Exception:
+        _cmap1 = set(); _cmap2 = set()
+
+    def sf(text, bold=False):
+        """Selecciona Crystal si todos los chars están disponibles, si no Carlito."""
+        cmap = _cmap1 if bold else _cmap2
+        if cmap and all(ord(ch) in cmap for ch in text):
+            return "CR1" if bold else "CR2"
+        return F1 if bold else F2
 
     nombre_empresa      = str(datos_api.get("nombre_empresa", ""))
     paciente            = str(datos_api.get("Paciente", ""))
@@ -571,8 +584,9 @@ def generar_pdf_directo(datos_api, no_cuenta, ruta_png_firma, session_dir) -> Pa
     # Línea 1: x=117.24→466.93  y_top=24.21
     # Línea 2: x=208.20→376.42  y_top=38.73
     # ══════════════════════════════════════════════════════════
-    c.setFont(F1, 11.977)
+    c.setFont(sf("CERTIFICADO DE ATENCION MEDICA PARA VICTIMAS DE", bold=True), 11.977)
     c.drawCentredString(W/2, yt(24.21), "CERTIFICADO DE ATENCION MEDICA PARA VICTIMAS DE")
+    c.setFont(sf("ACCIDENTES DE TRÁNSITO", bold=True), 11.977)
     c.drawCentredString(W/2, yt(38.73), "ACCIDENTES DE TRÁNSITO")
 
     # ══════════════════════════════════════════════════════════
@@ -596,8 +610,10 @@ def generar_pdf_directo(datos_api, no_cuenta, ruta_png_firma, session_dir) -> Pa
 
     if c.stringWidth(intro, F2, 9.941) <= MAX_W:
         # Cabe en una línea — exacto al MUESTRA
+        c.setFont(sf(intro), 9.941)
         c.drawString(31.92, yt(67.07), intro)
-        # Línea 2: paciente — x=31.92  y_top=74.07
+        # Línea 2: paciente
+        c.setFont(sf(f"Señor(a)   {paciente}"), 9.941)
         c.drawString(31.92, yt(79.07), f"Señor(a)   {paciente}")
     else:
         # Wrap: partir en dos líneas usando las mismas y del MUESTRA
@@ -612,24 +628,32 @@ def generar_pdf_directo(datos_api, no_cuenta, ruta_png_firma, session_dir) -> Pa
         if line: lines.append(line)
         c.drawString(31.92, yt(62.07), lines[0])
         if len(lines) > 1:
-            c.drawString(31.92, yt(79.07), lines[1])
+            c.setFont(sf(lines[1]), 9.941)
+        c.drawString(31.92, yt(79.07), lines[1])
         # Paciente en siguiente línea disponible
+        c.setFont(sf(f"Señor(a)   {paciente}"), 9.941)
         c.drawString(31.92, yt(79.07 + 12.0), f"Señor(a)   {paciente}")
 
     # ── COLUMNA IZQUIERDA ──────────────────────────────────────
     # Identificación: x=35.64  y_top=113.91
     # Sexo:           x=35.64  y_top=132.63
     # Servicio:       x=35.64  y_top=152.07
+    c.setFont(sf(f"Identificación: {tipo_documento}"), 9.941)
     c.drawString(35.64, yt(118.91), f"Identificación: {tipo_documento}")
+    c.setFont(sf(f"Sexo:  {sexo}"), 9.941)
     c.drawString(35.64, yt(137.63), f"Sexo:  {sexo}")
+    c.setFont(sf(f"Servicio Ingreso:  {cod_servicio} - {nom_servicio}"), 9.941)
     c.drawString(35.64, yt(157.07), f"Servicio Ingreso:  {cod_servicio} - {nom_servicio}")
 
     # ── COLUMNA DERECHA ────────────────────────────────────────
     # Edad:         x=365.64  y_top=112.35
     # Fecha Nac:    x=365.64  y_top=132.63
     # Fecha Ingr:   x=365.64  y_top=152.07
+    c.setFont(sf(f"Edad: {edad} {medida_edad}"), 9.941)
     c.drawString(365.64, yt(117.35), f"Edad: {edad} {medida_edad}")
+    c.setFont(sf(f"Fecha Nacimiento:  {fecha_nac}"), 9.941)
     c.drawString(365.64, yt(137.63), f"Fecha Nacimiento:  {fecha_nac}")
+    c.setFont(sf(f"Fecha y hora ingreso:  {fecha_ingreso}"), 9.941)
     c.drawString(365.64, yt(157.07), f"Fecha y hora ingreso:  {fecha_ingreso}")
 
     # ══════════════════════════════════════════════════════════
@@ -637,9 +661,10 @@ def generar_pdf_directo(datos_api, no_cuenta, ruta_png_firma, session_dir) -> Pa
     # Línea 1: x=54.00→523.31  y_top=183.63
     # Línea 2: x=146.28→428.54 y_top=195.63
     # ══════════════════════════════════════════════════════════
-    c.setFont(F1, 9.941)
+    c.setFont(sf("EL SUSCRITO MEDICO CERTIFICA LA RELACION CAUSAL DIRECTA ENTRE LAS LESIONES QUE", bold=True), 9.941)
     c.drawCentredString(W/2, yt(183.63),
         "EL SUSCRITO MEDICO CERTIFICA LA RELACION CAUSAL DIRECTA ENTRE LAS LESIONES QUE")
+    c.setFont(sf("PRESENTA EL PACIENTE Y EL ACCIDENTE DE TRANSITO.", bold=True), 9.941)
     c.drawCentredString(W/2, yt(195.63),
         "PRESENTA EL PACIENTE Y EL ACCIDENTE DE TRANSITO.")
 
@@ -680,9 +705,9 @@ def generar_pdf_directo(datos_api, no_cuenta, ruta_png_firma, session_dir) -> Pa
     c.line(322.2, yt(LINEA_Y_TOP), 565.2, yt(LINEA_Y_TOP))
 
     # DR. y REG.M. — posición original del MUESTRA
-    c.setFont(F2, 9.941)
+    c.setFont(sf(f"Dr. {medico}"), 9.941)
     c.drawString(322.20, yt(293.07), f"Dr. {medico}")
-    c.setFont(F2, 8.983)
+    c.setFont(sf(f"Reg.M. {tarjeta_profesional}"), 8.983)
     c.drawString(322.20, yt(305.11), f"Reg.M. {tarjeta_profesional}")
 
     c.save()
