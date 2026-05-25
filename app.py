@@ -535,12 +535,8 @@ def generar_pdf_directo(datos_api, no_cuenta, ruta_png_firma, session_dir) -> Pa
     FD   = FONTS_DIR
     LLIB = "/usr/share/fonts/truetype/liberation"
 
-    # Fuentes híbridas: Crystal glyphs (del MUESTRA) + Carlito para chars faltantes
-    # HybridF1/F2 = Carlito completo con los glifos de Crystal sobrescritos
-    # Resultado: misma apariencia que Crystal donde coinciden, sin cuadros
-    if _reg("F1", FD/"HybridF1.ttf") and _reg("F2", FD/"HybridF2.ttf"):
-        F1 = "F1"; F2 = "F2"
-    elif _reg("F1", FD/"Carlito-Bold.ttf") and _reg("F2", FD/"Carlito-Regular.ttf"):
+    # Carlito: cobertura completa, layout correcto
+    if _reg("F1", FD/"Carlito-Bold.ttf") and _reg("F2", FD/"Carlito-Regular.ttf"):
         F1 = "F1"; F2 = "F2"
     elif _reg("F1", f"{LLIB}/LiberationSans-Bold.ttf") and _reg("F2", f"{LLIB}/LiberationSans-Regular.ttf"):
         F1 = "F1"; F2 = "F2"
