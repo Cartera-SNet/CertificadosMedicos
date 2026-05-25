@@ -535,29 +535,19 @@ def generar_pdf_directo(datos_api, no_cuenta, ruta_png_firma, session_dir) -> Pa
     FD   = FONTS_DIR
     LLIB = "/usr/share/fonts/truetype/liberation"
 
-    # Fuentes Crystal (mismas del MUESTRA) + Carlito como fallback completo
-    _reg("CR1", FD/"CrystalF1.ttf")
-    _reg("CR2", FD/"CrystalF2.ttf")
-    if _reg("F1", FD/"Carlito-Bold.ttf") and _reg("F2", FD/"Carlito-Regular.ttf"):
+    # Fuentes híbridas: Crystal glyphs (del MUESTRA) + Carlito para chars faltantes
+    # HybridF1/F2 = Carlito completo con los glifos de Crystal sobrescritos
+    # Resultado: misma apariencia que Crystal donde coinciden, sin cuadros
+    if _reg("F1", FD/"HybridF1.ttf") and _reg("F2", FD/"HybridF2.ttf"):
+        F1 = "F1"; F2 = "F2"
+    elif _reg("F1", FD/"Carlito-Bold.ttf") and _reg("F2", FD/"Carlito-Regular.ttf"):
         F1 = "F1"; F2 = "F2"
     elif _reg("F1", f"{LLIB}/LiberationSans-Bold.ttf") and _reg("F2", f"{LLIB}/LiberationSans-Regular.ttf"):
         F1 = "F1"; F2 = "F2"
     else:
         F1 = "Helvetica-Bold"; F2 = "Helvetica"
 
-    # Construir charset de Crystal para seleccionar fuente por string
-    try:
-        from fontTools.ttLib import TTFont as _TTFTools
-        _cmap1 = set(_TTFTools(str(FD/"CrystalF1.ttf")).getBestCmap().keys())
-        _cmap2 = set(_TTFTools(str(FD/"CrystalF2.ttf")).getBestCmap().keys())
-    except Exception:
-        _cmap1 = set(); _cmap2 = set()
-
     def sf(text, bold=False):
-        """Selecciona Crystal si todos los chars están disponibles, si no Carlito."""
-        cmap = _cmap1 if bold else _cmap2
-        if cmap and all(ord(ch) in cmap for ch in text):
-            return "CR1" if bold else "CR2"
         return F1 if bold else F2
 
     nombre_empresa      = str(datos_api.get("nombre_empresa", ""))
