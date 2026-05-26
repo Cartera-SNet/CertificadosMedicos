@@ -179,19 +179,7 @@ def reset():
 # ─────────────────────────────────────────────────────────────
 # AUTENTICACIÓN
 # ─────────────────────────────────────────────────────────────
-def get_users():
-    """
-    Lee usuarios desde variable de entorno BOT_USERS.
-    Formato JSON: {"admin": "password123", "usuario1": "clave456"}
-    Si no existe, usa usuario por defecto: admin / soat2025
-    """
-    raw = os.environ.get("BOT_USERS", "")
-    if raw:
-        try:
-            return json.loads(raw)
-        except Exception:
-            pass
-    return {"admin": os.environ.get("BOT_PASSWORD", "soat2025")}
+# get_users() eliminado — autenticación ahora via API Esculapio
 
 # Almacén de intentos fallidos por IP: {ip: {"intentos": N, "bloqueado_hasta": timestamp}}
 _login_intentos = {}
@@ -1236,39 +1224,64 @@ def login_page():
 
 @app.route("/api/auth/login", methods=["POST"])
 def auth_login():
+    """
+    Login via API Esculapio: valida credenciales llamando a obtener-empresas.
+    Recibe: servidor (nombre), usuario, password.
+    Guarda en sesión: ip, puerto, usuario, password, empresas.
+    """
     ip = request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
 
-    # Verificar rate limit
     permitido, msg_bloqueo, _ = _check_rate_limit(ip)
     if not permitido:
         return jsonify({"error": msg_bloqueo}), 429
 
     data     = request.get_json() or {}
+    servidor = data.get("servidor", "").strip()
     usuario  = data.get("usuario", "").strip()
     password = data.get("password", "").strip()
-    if not usuario or not password:
-        return jsonify({"error": "Usuario y contraseña requeridos"}), 400
 
-    users = get_users()
-    if usuario in users and users[usuario] == password:
-        _registrar_login_exitoso(ip)
-        session["autenticado"] = True
-        session["usuario"]     = usuario
-        session.permanent      = True
-        log(f"Login exitoso: {usuario} desde {ip}", "info")
-        return jsonify({"success": True, "usuario": usuario})
+    if not all([servidor, usuario, password]):
+        return jsonify({"error": "Servidor, usuario y contraseña son requeridos"}), 400
 
-    # Login fallido
-    _registrar_intento_fallido(ip)
-    datos_ip = _login_intentos.get(ip, {})
-    intentos  = datos_ip.get("intentos", 1)
-    restantes = max(0, _LOGIN_MAX_INTENTOS - intentos)
-    log(f"Login fallido: usuario='{usuario}' IP={ip} (intento {intentos}/{_LOGIN_MAX_INTENTOS})", "warn")
+    # Buscar IP/puerto del servidor
+    servidores = _get_servidores_api()
+    srv = next((s for s in servidores if s.get("Descripcion", "").strip() == servidor), None)
+    if not srv:
+        return jsonify({"error": f"Servidor '{servidor}' no encontrado"}), 404
 
-    if restantes > 0:
-        return jsonify({"error": f"Usuario o contraseña incorrectos. Te quedan {restantes} intento(s)."}), 401
-    else:
-        return jsonify({"error": f"Demasiados intentos fallidos. IP bloqueada por {_LOGIN_BLOQUEO_SEG//60} minutos."}), 429
+    ip_srv = srv.get("Ip_Conexion", "")
+    puerto = str(srv.get("Puerto", "3306"))
+
+    # Validar credenciales via API
+    empresas_raw = _get_empresas_api(ip_srv, puerto, usuario, password)
+    if not empresas_raw:
+        _registrar_intento_fallido(ip)
+        datos_ip  = _login_intentos.get(ip, {})
+        intentos  = datos_ip.get("intentos", 1)
+        restantes = max(0, _LOGIN_MAX_INTENTOS - intentos)
+        log(f"Login fallido: usuario='{usuario}' servidor='{servidor}' IP={ip}", "warn")
+        if restantes > 0:
+            return jsonify({"error": f"Credenciales inválidas. Te quedan {restantes} intento(s)."}), 401
+        else:
+            return jsonify({"error": f"Demasiados intentos. IP bloqueada por {_LOGIN_BLOQUEO_SEG//60} min."}), 429
+
+    empresas = [
+        {"cod": e.get("Empresa", ""), "nombre": e.get("Nombre_Empresa", "")}
+        for e in empresas_raw if e.get("Empresa")
+    ]
+
+    _registrar_login_exitoso(ip)
+    session.permanent      = True
+    session["autenticado"] = True
+    session["usuario"]     = usuario
+    session["password"]    = password
+    session["ip"]          = ip_srv
+    session["puerto"]      = puerto
+    session["servidor"]    = servidor
+    session["empresas"]    = empresas
+
+    log(f"Login exitoso: {usuario} @ {servidor} — {len(empresas)} empresa(s)", "info")
+    return jsonify({"success": True, "usuario": usuario, "empresas": empresas})
 
 @app.route("/api/auth/logout", methods=["POST"])
 def auth_logout():
@@ -1278,8 +1291,19 @@ def auth_logout():
 @app.route("/api/auth/me")
 def auth_me():
     if session.get("autenticado"):
-        return jsonify({"autenticado": True, "usuario": session.get("usuario", "")})
+        return jsonify({
+            "autenticado": True,
+            "usuario":     session.get("usuario", ""),
+            "servidor":    session.get("servidor", ""),
+            "empresas":    session.get("empresas", []),
+        })
     return jsonify({"autenticado": False}), 401
+
+@app.route("/api/empresas-sesion")
+@login_requerido
+def empresas_sesion():
+    """Devuelve las empresas del usuario logueado guardadas en sesión."""
+    return jsonify({"empresas": session.get("empresas", [])})
 
 @app.route("/")
 @login_requerido
@@ -1287,8 +1311,7 @@ def index():
     return render_template("index.html")
 
 @app.route("/api/servidores")
-@login_requerido
-def get_servidores():
+def get_servidores():  # Pública: necesaria para el login
     """Devuelve lista de servidores desde la API Esculapio."""
     try:
         servidores = _get_servidores_api()
@@ -1308,51 +1331,7 @@ def get_servidores():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/login", methods=["POST"])
-@login_requerido
-def login_usuario():
-    """
-    Valida credenciales contra la API y devuelve las empresas disponibles.
-    Body: {servidor: 'Campbell', usuario: '...', password: '...'}
-    """
-    try:
-        data     = request.get_json()
-        nombre   = data.get("servidor", "")
-        usuario  = data.get("usuario", "")
-        password = data.get("password", "")
-
-        if not all([nombre, usuario, password]):
-            return jsonify({"error": "Faltan datos"}), 400
-
-        # Buscar el servidor en la API
-        servidores = _get_servidores_api()
-        srv = next((s for s in servidores if s.get("Descripcion", "").strip() == nombre), None)
-        if not srv:
-            return jsonify({"error": f"Servidor '{nombre}' no encontrado"}), 404
-
-        ip     = srv.get("Ip_Conexion", "")
-        puerto = str(srv.get("Puerto", "3306"))
-
-        # Validar credenciales y obtener empresas
-        empresas = _get_empresas_api(ip, puerto, usuario, password)
-        if not empresas:
-            return jsonify({"error": "Credenciales inválidas o usuario sin empresas asignadas en este servidor"}), 401
-
-        # Formatear empresas para el frontend
-        lista = [{"cod": e.get("Empresa", ""), "nombre": e.get("Nombre_Empresa", "")}
-                 for e in empresas if e.get("Empresa")]
-
-        if not lista:
-            return jsonify({"error": f"No se encontraron empresas (campos recibidos: {list(empresas[0].keys()) if empresas else []})"}), 401
-
-        return jsonify({
-            "success":  True,
-            "empresas": lista,
-            "ip":       ip,
-            "puerto":   puerto,
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+# /api/login eliminado — empresas via /api/empresas-sesion
 
 @app.route("/api/generar-plantilla")
 @login_requerido
@@ -1439,37 +1418,26 @@ def iniciar():
 
     data = request.get_json()
     casos    = data.get("casos", [])
-    servidor = data.get("servidor", "")
     empresa  = data.get("empresa", "")
-    usuario  = data.get("usuario", "")
-    password = data.get("password", "")
     reanudar = data.get("reanudar", False)
 
     if not casos:
         return jsonify({"error": "No hay casos para procesar"}), 400
-    if not servidor:
-        return jsonify({"error": "Servidor no seleccionado"}), 400
     if not empresa:
         return jsonify({"error": "Empresa no seleccionada"}), 400
-    if not usuario or not password:
-        return jsonify({"error": "Credenciales incompletas"}), 400
 
-    # Buscar servidor en la API
-    servidores = _get_servidores_api()
-    srv_data   = next((s for s in servidores if s.get("Descripcion", "").strip() == servidor), None)
-    if not srv_data:
-        return jsonify({"error": f"Servidor '{servidor}' no encontrado en la API"}), 400
-
+    # Credenciales desde la sesión (ya autenticado al hacer login)
     config = {
-        "servidor":    servidor,
-        "ip":          srv_data.get("Ip_Conexion", ""),
-        "puerto":      str(srv_data.get("Puerto", "3306")),
+        "servidor":    session.get("servidor", ""),
+        "ip":          session.get("ip", ""),
+        "puerto":      session.get("puerto", "3306"),
         "cod_empresa": empresa,
-        "usuario":     usuario,
-        "password":    password,
+        "usuario":     session.get("usuario", ""),
+        "password":    session.get("password", ""),
     }
+    if not config["ip"] or not config["usuario"]:
+        return jsonify({"error": "Sesión inválida, inicia sesión de nuevo"}), 401
 
-    # Buscar sesión pendiente o crear nueva
     if reanudar:
         session_dir = buscar_sesion_pendiente()
         if session_dir:
