@@ -402,7 +402,7 @@ let casos = [];
 let polling = false;
 let timerInterval = null;
 let timerStart = null;
-let servidoresData = {};
+let servidoresData = {}; // legacy
 let logOffset = 0;
 
 // ── Referencias DOM ────────────────────────────
@@ -438,7 +438,7 @@ async function cargarServidores() {
             const opt = document.createElement('option');
             opt.value = nombre;
             opt.textContent = nombre;
-            selServidor.appendChild(opt);
+            // selServidor removed
         });
     } catch(e) {
         alerta('Error cargando servidores: ' + e.message, 'err');
@@ -521,22 +521,16 @@ function descargarPlantilla() {
 
 // ── Iniciar proceso ─────────────────────────────
 async function iniciarProceso() {
-    const servidor = selServidor.value;
     const empresa  = selEmpresa.value;
-    const usuario  = inpUsuario.value.trim();
-    const password = inpPassword.value;
 
-    if (!servidor) return alerta('Selecciona un servidor', 'warn');
     if (!empresa)  return alerta('Selecciona una empresa', 'warn');
-    if (!usuario)  return alerta('Ingresa el usuario', 'warn');
-    if (!password) return alerta('Ingresa la contraseña', 'warn');
     if (casos.length === 0) return alerta('Carga el archivo con los casos primero', 'warn');
 
     try {
         const resp = await fetch('/api/iniciar', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ casos, servidor, empresa, usuario, password })
+            body: JSON.stringify({ casos, empresa, reanudar: false })
         });
         const data = await resp.json();
         if (data.error) throw new Error(data.error);
@@ -673,7 +667,7 @@ function mostrarBannerSesion(data) {
                 </div>
                 <div>
                     <p class="text-sm font-semibold text-blue-800">Sesión interrumpida detectada</p>
-                    <p class="text-xs text-blue-500">${data.completadas} completados · ${data.pendientes} pendientes de ${data.total} · Servidor: ${data.servidor}</p>
+                    <p class="text-xs text-blue-500">${data.completadas} completados · ${data.pendientes} pendientes de ${data.total} · Servidor: ${data.servidor || ''}</p>
                 </div>
             </div>
             <button onclick="reanudarSesion()" class="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-4 py-2 rounded-xl flex items-center gap-1.5 transition-all">
@@ -689,17 +683,12 @@ function ocultarBannerSesion() {
 }
 
 async function reanudarSesion() {
-    const usuario  = inpUsuario.value.trim();
-    const password = inpPassword.value;
-    const servidor = selServidor.value;
     const empresa  = selEmpresa.value;
-    if (!usuario || !password) return alerta('Ingresa credenciales para reanudar', 'warn');
-
     try {
         const resp = await fetch('/api/iniciar', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ casos: [], servidor, empresa, usuario, password, reanudar: true })
+            body: JSON.stringify({ casos: [], empresa, reanudar: true })
         });
         const data = await resp.json();
         if (data.error) throw new Error(data.error);

@@ -290,7 +290,7 @@
     // Focus automático
     document.getElementById('usuario').focus();
 
-    // Cargar servidores con reintentos
+    // Cargar servidores desde la API de Esculapio
     async function cargarServidores(intento = 1) {
         const sel = document.getElementById('servidor');
         try {
@@ -298,9 +298,13 @@
             if (!resp.ok) throw new Error('HTTP ' + resp.status);
             const data = await resp.json();
             const nombres = Object.keys(data).sort();
-            if (nombres.length === 0 && intento < 4) {
-                sel.innerHTML = '<option value="">Reintentando...</option>';
-                setTimeout(() => cargarServidores(intento + 1), 2000);
+            if (nombres.length === 0) {
+                if (intento < 4) {
+                    sel.innerHTML = '<option value="">Cargando servidores... (' + intento + '/3)</option>';
+                    setTimeout(() => cargarServidores(intento + 1), 2500);
+                } else {
+                    sel.innerHTML = '<option value="">⚠ No se pudo conectar — recarga</option>';
+                }
                 return;
             }
             sel.innerHTML = '<option value="">— Selecciona servidor —</option>';
@@ -312,10 +316,10 @@
             });
         } catch(e) {
             if (intento < 4) {
-                sel.innerHTML = '<option value="">Cargando... (intento ' + intento + ')</option>';
-                setTimeout(() => cargarServidores(intento + 1), 2000);
+                sel.innerHTML = '<option value="">Conectando... (' + intento + '/3)</option>';
+                setTimeout(() => cargarServidores(intento + 1), 2500);
             } else {
-                sel.innerHTML = '<option value="">⚠ Error — recarga la página</option>';
+                sel.innerHTML = '<option value="">⚠ Sin conexión a la API — recarga la página</option>';
             }
         }
     }
