@@ -152,19 +152,6 @@
                 <span id="errorMsg">Usuario o contraseña incorrectos</span>
             </div>
 
-            <!-- Servidor -->
-            <div class="mb-4">
-                <label class="block text-xs font-semibold text-gray-600 mb-1.5">
-                    <i class="fas fa-server mr-1 text-gray-400"></i>Servidor
-                </label>
-                <div class="relative">
-                    <i class="fas fa-server input-icon"></i>
-                    <select id="servidor" name="servidor" class="input-field" required>
-                        <option value="">— Cargando servidores... —</option>
-                    </select>
-                </div>
-            </div>
-
             <!-- Usuario -->
             <div class="mb-4">
                 <label class="block text-xs font-semibold text-gray-600 mb-1.5">
@@ -253,57 +240,25 @@
         btn.disabled = true;
 
         try {
-            const servidor = document.getElementById('servidor').value;
-            if (!servidor) { throw new Error('Selecciona un servidor'); }
-
-            // PASO 1: El navegador llama directo a la API de Esculapio
-            // (el browser está en la red interna, tiene acceso)
-            const srvData  = servidoresData[servidor] || {};
-            const ip       = srvData.ip || '';
-            const puerto   = srvData.puerto || '3306';
-            let empresas   = [];
-
-            if (ip) {
-                try {
-                    const API_EMP = 'https://appsintranet.esculapiosis.com/ApiCampbell/api/Usuarios/obtener-empresas';
-                    const qs = `IpConexion=${encodeURIComponent(ip)}&BdConexion=bd&PortConexion=${encodeURIComponent(puerto)}&Usuario=${encodeURIComponent(usuario)}&PasswordUsu=${encodeURIComponent(password)}`;
-                    const rEmp = await fetch(`${API_EMP}?${qs}`);
-                    if (rEmp.ok) {
-                        const raw = await rEmp.json();
-                        if (Array.isArray(raw) && raw.length > 0) {
-                            empresas = raw.filter(e => e.Empresa).map(e => ({
-                                cod: e.Empresa,
-                                nombre: e.Nombre_Empresa || e.Empresa
-                            }));
-                        }
-                    }
-                } catch(apiErr) {
-                    console.warn('API directa no disponible:', apiErr.message);
-                }
-            }
-
-            // PASO 2: Crear sesión en Railway pasando las empresas obtenidas
             const res = await fetch('/api/auth/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ servidor, usuario, password, empresas_browser: empresas })
+                body: JSON.stringify({ usuario, password })
             });
             const data = await res.json();
 
             if (res.ok && data.success) {
-                const empFinal = empresas.length > 0 ? empresas : (data.empresas || []);
-                sessionStorage.setItem('empresas', JSON.stringify(empFinal));
-                sessionStorage.setItem('usuario',  usuario);
-                sessionStorage.setItem('servidor', servidor);
+                // Login exitoso → redirigir al app principal
                 window.location.href = '/';
             } else {
-                errorMsg.textContent = data.error || 'Credenciales inválidas';
+                errorMsg.textContent = data.error || 'Usuario o contraseña incorrectos';
                 errorBox.classList.remove('hidden');
+                // Shake input
                 document.getElementById('password').value = '';
                 document.getElementById('usuario').focus();
             }
         } catch (err) {
-            errorMsg.textContent = err.message || 'Error de conexión. Intenta nuevamente.';
+            errorMsg.textContent = 'Error de conexión. Intenta nuevamente.';
             errorBox.classList.remove('hidden');
         } finally {
             btnText.classList.remove('hidden');
@@ -321,41 +276,6 @@
 
     // Focus automático
     document.getElementById('usuario').focus();
-
-    // Cargar servidores desde la API de Esculapio
-    async function cargarServidores(intento = 1) {
-        const sel = document.getElementById('servidor');
-        try {
-            const resp = await fetch('/api/servidores');
-            if (!resp.ok) throw new Error('HTTP ' + resp.status);
-            const data = await resp.json();
-            const nombres = Object.keys(data).sort();
-            if (nombres.length === 0) {
-                if (intento < 4) {
-                    sel.innerHTML = '<option value="">Cargando servidores... (' + intento + '/3)</option>';
-                    setTimeout(() => cargarServidores(intento + 1), 2500);
-                } else {
-                    sel.innerHTML = '<option value="">⚠ No se pudo conectar — recarga</option>';
-                }
-                return;
-            }
-            sel.innerHTML = '<option value="">— Selecciona servidor —</option>';
-            nombres.forEach(nombre => {
-                const opt = document.createElement('option');
-                opt.value = nombre;
-                opt.textContent = nombre;
-                sel.appendChild(opt);
-            });
-        } catch(e) {
-            if (intento < 4) {
-                sel.innerHTML = '<option value="">Conectando... (' + intento + '/3)</option>';
-                setTimeout(() => cargarServidores(intento + 1), 2500);
-            } else {
-                sel.innerHTML = '<option value="">⚠ Sin conexión a la API — recarga la página</option>';
-            }
-        }
-    }
-    cargarServidores();
 </script>
 </body>
 </html>
