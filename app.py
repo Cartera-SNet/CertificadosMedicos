@@ -1256,23 +1256,31 @@ def auth_login():
     ip_srv = srv.get("Ip_Conexion", "")
     puerto = str(srv.get("Puerto", "3306"))
 
-    # Validar credenciales via API
-    empresas_raw = _get_empresas_api(ip_srv, puerto, usuario, password)
-    if not empresas_raw:
-        _registrar_intento_fallido(ip)
-        datos_ip  = _login_intentos.get(ip, {})
-        intentos  = datos_ip.get("intentos", 1)
-        restantes = max(0, _LOGIN_MAX_INTENTOS - intentos)
-        log(f"Login fallido: usuario='{usuario}' servidor='{servidor}' IP={ip}", "warn")
-        if restantes > 0:
-            return jsonify({"error": f"Credenciales inválidas. Te quedan {restantes} intento(s)."}), 401
-        else:
-            return jsonify({"error": f"Demasiados intentos. IP bloqueada por {_LOGIN_BLOQUEO_SEG//60} min."}), 429
+    # Empresas: el navegador las obtuvo directamente de la API (red interna)
+    # Railway también intenta obtenerlas como respaldo
+    empresas_browser = data.get("empresas_browser", [])
 
-    empresas = [
-        {"cod": e.get("Empresa", ""), "nombre": e.get("Nombre_Empresa", "")}
-        for e in empresas_raw if e.get("Empresa")
-    ]
+    if empresas_browser:
+        # El navegador obtuvo las empresas directamente — usar esas
+        empresas = empresas_browser
+        log(f"Empresas recibidas del navegador: {len(empresas)}", "info")
+    else:
+        # Intentar desde Railway (puede fallar si la API está en red interna)
+        empresas_raw = _get_empresas_api(ip_srv, puerto, usuario, password)
+        if not empresas_raw:
+            _registrar_intento_fallido(ip)
+            datos_ip  = _login_intentos.get(ip, {})
+            intentos  = datos_ip.get("intentos", 1)
+            restantes = max(0, _LOGIN_MAX_INTENTOS - intentos)
+            log(f"Login fallido: usuario='{usuario}' servidor='{servidor}' IP={ip}", "warn")
+            if restantes > 0:
+                return jsonify({"error": f"Credenciales inválidas. Te quedan {restantes} intento(s)."}), 401
+            else:
+                return jsonify({"error": f"Demasiados intentos. IP bloqueada por {_LOGIN_BLOQUEO_SEG//60} min."}), 429
+        empresas = [
+            {"cod": e.get("Empresa", ""), "nombre": e.get("Nombre_Empresa", "")}
+            for e in empresas_raw if e.get("Empresa")
+        ]
 
     _registrar_login_exitoso(ip)
     session.permanent      = True

@@ -253,30 +253,57 @@
         btn.disabled = true;
 
         try {
+            const servidor = document.getElementById('servidor').value;
+            if (!servidor) { throw new Error('Selecciona un servidor'); }
+
+            // PASO 1: El navegador llama directo a la API de Esculapio
+            // (el browser está en la red interna, tiene acceso)
+            const srvData  = servidoresData[servidor] || {};
+            const ip       = srvData.ip || '';
+            const puerto   = srvData.puerto || '3306';
+            let empresas   = [];
+
+            if (ip) {
+                try {
+                    const API_EMP = 'https://appsintranet.esculapiosis.com/ApiCampbell/api/Usuarios/obtener-empresas';
+                    const qs = `IpConexion=${encodeURIComponent(ip)}&BdConexion=bd&PortConexion=${encodeURIComponent(puerto)}&Usuario=${encodeURIComponent(usuario)}&PasswordUsu=${encodeURIComponent(password)}`;
+                    const rEmp = await fetch(`${API_EMP}?${qs}`);
+                    if (rEmp.ok) {
+                        const raw = await rEmp.json();
+                        if (Array.isArray(raw) && raw.length > 0) {
+                            empresas = raw.filter(e => e.Empresa).map(e => ({
+                                cod: e.Empresa,
+                                nombre: e.Nombre_Empresa || e.Empresa
+                            }));
+                        }
+                    }
+                } catch(apiErr) {
+                    console.warn('API directa no disponible:', apiErr.message);
+                }
+            }
+
+            // PASO 2: Crear sesión en Railway pasando las empresas obtenidas
             const res = await fetch('/api/auth/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ servidor: document.getElementById('servidor').value, usuario, password })
+                body: JSON.stringify({ servidor, usuario, password, empresas_browser: empresas })
             });
             const data = await res.json();
 
             if (res.ok && data.success) {
-                // Login exitoso → guardar empresas en sessionStorage y redirigir
-                if (data.empresas) {
-                    sessionStorage.setItem('empresas', JSON.stringify(data.empresas));
-                    sessionStorage.setItem('usuario', data.usuario || '');
-                    sessionStorage.setItem('servidor', document.getElementById('servidor').value);
-                }
+                const empFinal = empresas.length > 0 ? empresas : (data.empresas || []);
+                sessionStorage.setItem('empresas', JSON.stringify(empFinal));
+                sessionStorage.setItem('usuario',  usuario);
+                sessionStorage.setItem('servidor', servidor);
                 window.location.href = '/';
             } else {
-                errorMsg.textContent = data.error || 'Usuario o contraseña incorrectos';
+                errorMsg.textContent = data.error || 'Credenciales inválidas';
                 errorBox.classList.remove('hidden');
-                // Shake input
                 document.getElementById('password').value = '';
                 document.getElementById('usuario').focus();
             }
         } catch (err) {
-            errorMsg.textContent = 'Error de conexión. Intenta nuevamente.';
+            errorMsg.textContent = err.message || 'Error de conexión. Intenta nuevamente.';
             errorBox.classList.remove('hidden');
         } finally {
             btnText.classList.remove('hidden');
