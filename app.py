@@ -744,6 +744,7 @@ def auth_login():
     session["servidor"]    = servidor
     session["ip"]          = ip_srv
     session["puerto"]      = puerto
+    session["empresas"]    = empresas  # guardar para /api/auth/me
     log(f"Login OK: {usuario}@{servidor} — {len(empresas)} empresa(s)", "info")
     return jsonify({"success": True, "empresas": empresas})
 
@@ -755,7 +756,12 @@ def auth_logout():
 @app.route("/api/auth/me")
 def auth_me():
     if session.get("autenticado"):
-        return jsonify({"autenticado": True, "usuario": session.get("usuario"), "servidor": session.get("servidor")})
+        return jsonify({
+            "autenticado": True,
+            "usuario":     session.get("usuario", ""),
+            "servidor":    session.get("servidor", ""),
+            "empresas":    session.get("empresas", []),
+        })
     return jsonify({"autenticado": False}), 401
 
 # ------------------------------------------------------------

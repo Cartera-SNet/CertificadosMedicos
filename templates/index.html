@@ -431,19 +431,41 @@ let timerStart = null;
 let servidoresData = {};
 
 // ── Cargar sesión y empresas desde sessionStorage ──────────
-function cargarSesion() {
+async function cargarSesion() {
+    // Intentar desde sessionStorage primero (instantáneo)
+    let empresas = [];
+    try {
+        const cached = sessionStorage.getItem('empresas');
+        if (cached) empresas = JSON.parse(cached);
+    } catch(e) {}
+
+    // Si no hay en sessionStorage, pedir al servidor
+    if (!empresas || empresas.length === 0) {
+        try {
+            const resp = await fetch('/api/auth/me');
+            if (resp.status === 401) { window.location.href = '/login'; return; }
+            const data = await resp.json();
+            empresas = data.empresas || [];
+            // Actualizar sessionStorage
+            if (empresas.length > 0) {
+                sessionStorage.setItem('empresas', JSON.stringify(empresas));
+                sessionStorage.setItem('usuario',  data.usuario  || '');
+                sessionStorage.setItem('servidor', data.servidor || '');
+            }
+        } catch(e) { console.error('Error cargando sesión:', e); }
+    }
+
+    // Mostrar info usuario
     const usuario  = sessionStorage.getItem('usuario')  || '';
     const servidor = sessionStorage.getItem('servidor') || '';
-    const empJson  = sessionStorage.getItem('empresas') || '[]';
-
     const lblU = document.getElementById('lblUsuarioSesion');
     const lblS = document.getElementById('lblServidorSesion');
     if (lblU) lblU.textContent = usuario || 'Usuario';
     if (lblS) lblS.textContent = servidor;
 
-    try {
-        const empresas = JSON.parse(empJson);
-        const sel = document.getElementById('selEmpresa');
+    // Poblar selector de empresas
+    const sel = document.getElementById('selEmpresa');
+    if (empresas.length > 0) {
         sel.innerHTML = '<option value="">— Selecciona empresa —</option>';
         empresas.forEach(e => {
             const o = document.createElement('option');
@@ -452,7 +474,9 @@ function cargarSesion() {
         });
         sel.disabled = false;
         if (empresas.length === 1) sel.value = empresas[0].cod;
-    } catch(e) { console.error('Error cargando empresas:', e); }
+    } else {
+        sel.innerHTML = '<option value="">— Sin empresas disponibles —</option>';
+    }
 }
 
 async function cerrarSesion() {
