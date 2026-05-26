@@ -95,7 +95,11 @@ L = logging.getLogger(__name__)
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "sis-soat-2025-key")
 from datetime import timedelta
-app.permanent_session_lifetime = timedelta(hours=8)
+app.permanent_session_lifetime        = timedelta(hours=8)
+app.config["SESSION_COOKIE_HTTPONLY"]  = True
+app.config["SESSION_COOKIE_SAMESITE"]  = "Lax"
+# SECURE solo en producción Railway (cuando hay HTTPS real)
+app.config["SESSION_COOKIE_SECURE"]   = os.environ.get("RAILWAY_ENVIRONMENT") is not None
 
 # ── HTTPS forzado en Railway ────────────────────────────────
 @app.before_request
@@ -784,11 +788,21 @@ def auth_logout():
 @app.route("/api/auth/me")
 def auth_me():
     if session.get("autenticado"):
+        empresa_cod = session.get("empresa", "")
+        empresas    = session.get("empresas", [])
+        # Buscar nombre de la empresa seleccionada
+        empresa_nombre = empresa_cod
+        for e in empresas:
+            if e.get("cod") == empresa_cod:
+                empresa_nombre = e.get("nombre", empresa_cod)
+                break
         return jsonify({
-            "autenticado": True,
-            "usuario":     session.get("usuario", ""),
-            "servidor":    session.get("servidor", ""),
-            "empresas":    session.get("empresas", []),
+            "autenticado":    True,
+            "usuario":        session.get("usuario", ""),
+            "servidor":       session.get("servidor", ""),
+            "empresa":        empresa_cod,
+            "empresa_nombre": empresa_nombre,
+            "empresas":       empresas,
         })
     return jsonify({"autenticado": False}), 401
 

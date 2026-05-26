@@ -139,7 +139,7 @@
     async function cargarServidores(intento = 1) {
         const sel = document.getElementById('selServidor');
         try {
-            const resp = await fetch('/api/servidores');
+            const resp = await fetch('/api/servidores', { credentials: 'include' });
             const data = await resp.json();
             const nombres = Object.keys(data).sort();
             if (!nombres.length && intento < 4) {
@@ -200,6 +200,7 @@
         try {
             const resp = await fetch('/api/auth/conectar', {
                 method: 'POST',
+                credentials: 'include',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({ servidor, usuario, password })
             });
@@ -250,6 +251,7 @@
         try {
             const resp = await fetch('/api/auth/login', {
                 method: 'POST',
+                credentials: 'include',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
                     servidor:  credencialesOk.servidor,
