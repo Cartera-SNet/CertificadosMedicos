@@ -451,24 +451,48 @@ async function cargarServidores() {
 // ── Login — valida y carga empresas del usuario ──
 async function cargarEmpresasSesion() {
     try {
+        // Intentar primero desde sessionStorage (más rápido)
+        const cached = sessionStorage.getItem('empresas');
+        if (cached) {
+            const empresas = JSON.parse(cached);
+            if (empresas && empresas.length > 0) {
+                poblarEmpresas(empresas);
+                return;
+            }
+        }
+        // Fallback: pedir al servidor
         const resp = await fetch('/api/empresas-sesion');
         if (resp.status === 401) { window.location.href = '/login'; return; }
         const data = await resp.json();
-        const empresas = data.empresas || [];
-        selEmpresa.innerHTML = '<option value="">— Selecciona empresa —</option>';
-        empresas.forEach(e => {
-            const opt = document.createElement('option');
-            opt.value = e.cod;
-            opt.textContent = e.nombre || e.cod;
-            selEmpresa.appendChild(opt);
-        });
-        selEmpresa.disabled = false;
-        if (empresas.length === 1) selEmpresa.value = empresas[0].cod;
+        poblarEmpresas(data.empresas || []);
     } catch(e) { console.error('Error cargando empresas:', e); }
+}
+
+function poblarEmpresas(empresas) {
+    selEmpresa.innerHTML = '<option value="">— Selecciona empresa —</option>';
+    empresas.forEach(e => {
+        const opt = document.createElement('option');
+        opt.value = e.cod;
+        opt.textContent = e.nombre || e.cod;
+        selEmpresa.appendChild(opt);
+    });
+    selEmpresa.disabled = false;
+    if (empresas.length === 1) selEmpresa.value = empresas[0].cod;
 }
 
 async function cargarInfoSesion() {
     try {
+        // Intentar desde sessionStorage primero
+        const usuario = sessionStorage.getItem('usuario');
+        const servidor = sessionStorage.getItem('servidor');
+        if (usuario) {
+            const lblU = document.getElementById('lblUsuarioSesion');
+            const lblS = document.getElementById('lblServidorSesion');
+            if (lblU) lblU.textContent = usuario;
+            if (lblS) lblS.textContent = servidor || '';
+            return;
+        }
+        // Fallback: pedir al servidor
         const resp = await fetch('/api/auth/me');
         if (resp.status === 401) { window.location.href = '/login'; return; }
         const data = await resp.json();

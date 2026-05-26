@@ -63,6 +63,7 @@ def _get_servidores_api():
         L.warning(f"Error API servidores: {e}")
         return _cache_servidores or []
 
+
 def _get_empresas_api(ip, puerto, usuario, password):
     """Valida credenciales y obtiene empresas del usuario en ese servidor."""
     try:

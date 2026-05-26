@@ -261,7 +261,12 @@
             const data = await res.json();
 
             if (res.ok && data.success) {
-                // Login exitoso → redirigir al app principal
+                // Login exitoso → guardar empresas en sessionStorage y redirigir
+                if (data.empresas) {
+                    sessionStorage.setItem('empresas', JSON.stringify(data.empresas));
+                    sessionStorage.setItem('usuario', data.usuario || '');
+                    sessionStorage.setItem('servidor', document.getElementById('servidor').value);
+                }
                 window.location.href = '/';
             } else {
                 errorMsg.textContent = data.error || 'Usuario o contraseña incorrectos';
