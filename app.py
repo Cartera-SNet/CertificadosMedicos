@@ -3,7 +3,9 @@ Bot Certificaciones Médicas SOAT — v2.0
 Migración API REST — SIS / Esculapio Soft
 """
 
-import os, csv, time, threading, zipfile, logging, json, shutil, re, base64, tempfile
+import os, csv, time, threading, zipfile, logging, json, shutil, re, base64
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning), tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from io import BytesIO
@@ -1315,7 +1317,10 @@ def get_servidores():  # Pública: necesaria para el login
     """Devuelve lista de servidores desde la API Esculapio."""
     try:
         servidores = _get_servidores_api()
-        # Transformar al formato que espera el frontend: {Descripcion: {id, ip, puerto}}
+        if not servidores:
+            # Intentar segunda vez si la primera falló
+            import time as _t; _t.sleep(1)
+            servidores = _get_servidores_api()
         data = {}
         for srv in servidores:
             nombre = srv.get("Descripcion", "").strip()
@@ -1326,8 +1331,10 @@ def get_servidores():  # Pública: necesaria para el login
                     "puerto": str(srv.get("Puerto", "3306")),
                     "usuario_default": srv.get("Usuario", ""),
                 }
+        L.info(f"[servidores] {len(data)} servidores devueltos")
         return jsonify(data)
     except Exception as e:
+        L.error(f"[servidores] Error: {e}")
         return jsonify({"error": str(e)}), 500
 
 
