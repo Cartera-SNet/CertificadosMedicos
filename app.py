@@ -711,28 +711,41 @@ def auth_login():
     usuario  = data.get("usuario", "").strip()
     password = data.get("password", "").strip()
     servidor = data.get("servidor", "").strip()
-    empresas = data.get("empresas", [])  # recibidas del navegador
 
     if not all([usuario, password, servidor]):
         return jsonify({"error": "Completa todos los campos"}), 400
 
-    if not empresas:
+    # Buscar IP/puerto del servidor seleccionado
+    servidores = _get_servidores_api()
+    srv = next((s for s in servidores if s.get("Descripcion","").strip() == servidor), None)
+    if not srv:
+        return jsonify({"error": f"Servidor '{servidor}' no encontrado"}), 404
+
+    ip_srv = srv.get("Ip_Conexion", "")
+    puerto = str(srv.get("Puerto", "3306"))
+
+    # Validar credenciales llamando a obtener-empresas
+    empresas_raw = _get_empresas_api(ip_srv, puerto, usuario, password)
+    if not empresas_raw:
         _fail(ip)
         d = _login_intentos.get(ip, {})
         r = max(0, _LOGIN_MAX - d.get("intentos", 1))
+        log(f"Login fallido: {usuario}@{servidor} IP={ip}", "warn")
         return jsonify({"error": f"Credenciales inválidas. {r} intento(s) restantes."}), 401
 
-    # Login válido
+    empresas = [{"cod": e.get("Empresa",""), "nombre": e.get("Nombre_Empresa","")}
+                for e in empresas_raw if e.get("Empresa")]
+
     _ok(ip)
-    session.permanent    = True
+    session.permanent      = True
     session["autenticado"] = True
     session["usuario"]     = usuario
     session["password"]    = password
     session["servidor"]    = servidor
-    session["ip"]          = data.get("ip", "")
-    session["puerto"]      = data.get("puerto", "3306")
-    log(f"Login: {usuario} @ {servidor}", "info")
-    return jsonify({"success": True})
+    session["ip"]          = ip_srv
+    session["puerto"]      = puerto
+    log(f"Login OK: {usuario}@{servidor} — {len(empresas)} empresa(s)", "info")
+    return jsonify({"success": True, "empresas": empresas})
 
 @app.route("/api/auth/logout", methods=["POST"])
 def auth_logout():

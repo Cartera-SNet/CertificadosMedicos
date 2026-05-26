@@ -104,7 +104,6 @@
 
 <script>
     // ── Servidores (cargados desde Railway que llama a la API) ──
-    const API_ESCULAPIO = 'https://appsintranet.esculapiosis.com/ApiCampbell/api/Usuarios';
     let servidoresData  = {};
 
     async function cargarServidores(intento = 1) {
@@ -173,45 +172,24 @@
         const puerto  = srvData.puerto || '3306';
 
         try {
-            // PASO 1: El navegador llama directo a la API de Esculapio
-            // (el navegador está en la red interna, tiene acceso)
             statusBox.classList.remove('hidden');
             statusMsg.textContent = 'Verificando credenciales...';
 
-            let empresas = [];
-            const params = new URLSearchParams({
-                IpConexion: ip, BdConexion: 'bd',
-                PortConexion: puerto, Usuario: usuario, PasswordUsu: password
-            });
-            const rEmp = await fetch(`${API_ESCULAPIO}/obtener-empresas?${params}`);
-            if (rEmp.ok) {
-                const raw = await rEmp.json();
-                empresas = Array.isArray(raw)
-                    ? raw.filter(e => e.Empresa).map(e => ({cod: e.Empresa, nombre: e.Nombre_Empresa || e.Empresa}))
-                    : [];
-            }
-
-            if (empresas.length === 0) {
-                throw new Error('Credenciales inválidas o usuario sin empresas asignadas');
-            }
-
-            // PASO 2: Crear sesión en Railway
-            statusMsg.textContent = 'Iniciando sesión...';
+            // Railway llama a la API de Esculapio (tiene acceso a la red)
             const res = await fetch('/api/auth/login', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ servidor, usuario, password, ip, puerto, empresas })
+                body: JSON.stringify({ servidor, usuario, password })
             });
             const data = await res.json();
 
             if (res.ok && data.success) {
-                // Guardar en sessionStorage para acceso inmediato
-                sessionStorage.setItem('empresas', JSON.stringify(empresas));
+                sessionStorage.setItem('empresas', JSON.stringify(data.empresas || []));
                 sessionStorage.setItem('usuario',  usuario);
                 sessionStorage.setItem('servidor', servidor);
                 window.location.href = '/';
             } else {
-                throw new Error(data.error || 'Error al iniciar sesión');
+                throw new Error(data.error || 'Credenciales inválidas');
             }
 
         } catch(err) {
