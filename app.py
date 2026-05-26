@@ -700,8 +700,9 @@ def login_page():
         return redirect(url_for("index"))
     return render_template("login.html")
 
-@app.route("/api/auth/login", methods=["POST"])
-def auth_login():
+@app.route("/api/auth/conectar", methods=["POST"])
+def auth_conectar():
+    """Paso 1: valida credenciales y devuelve empresas (sin crear sesión aún)."""
     ip = request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
     ok, msg = _check_rate(ip)
     if not ok:
@@ -715,7 +716,6 @@ def auth_login():
     if not all([usuario, password, servidor]):
         return jsonify({"error": "Completa todos los campos"}), 400
 
-    # Buscar IP/puerto del servidor seleccionado
     servidores = _get_servidores_api()
     srv = next((s for s in servidores if s.get("Descripcion","").strip() == servidor), None)
     if not srv:
@@ -724,19 +724,46 @@ def auth_login():
     ip_srv = srv.get("Ip_Conexion", "")
     puerto = str(srv.get("Puerto", "3306"))
 
-    # Validar credenciales llamando a obtener-empresas
     empresas_raw = _get_empresas_api(ip_srv, puerto, usuario, password)
     if not empresas_raw:
         _fail(ip)
         d = _login_intentos.get(ip, {})
         r = max(0, _LOGIN_MAX - d.get("intentos", 1))
-        log(f"Login fallido: {usuario}@{servidor} IP={ip}", "warn")
         return jsonify({"error": f"Credenciales inválidas. {r} intento(s) restantes."}), 401
 
     empresas = [{"cod": e.get("Empresa",""), "nombre": e.get("Nombre_Empresa","")}
                 for e in empresas_raw if e.get("Empresa")]
-
     _ok(ip)
+    log(f"Conectado: {usuario}@{servidor} — {len(empresas)} empresa(s)", "info")
+    return jsonify({"success": True, "empresas": empresas, "ip": ip_srv, "puerto": puerto})
+
+@app.route("/api/auth/login", methods=["POST"])
+def auth_login():
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
+    ok, msg = _check_rate(ip)
+    if not ok:
+        return jsonify({"error": msg}), 429
+
+    data     = request.get_json() or {}
+    usuario  = data.get("usuario", "").strip()
+    password = data.get("password", "").strip()
+    servidor = data.get("servidor", "").strip()
+    empresa  = data.get("empresa",  "").strip()
+    empresas = data.get("empresas", [])
+
+    if not all([usuario, password, servidor, empresa]):
+        return jsonify({"error": "Datos incompletos"}), 400
+
+    # Buscar IP/puerto
+    servidores = _get_servidores_api()
+    srv = next((s for s in servidores if s.get("Descripcion","").strip() == servidor), None)
+    if not srv:
+        return jsonify({"error": f"Servidor no encontrado"}), 404
+
+    ip_srv = srv.get("Ip_Conexion", "")
+    puerto = str(srv.get("Puerto", "3306"))
+
+    # Crear sesión Flask
     session.permanent      = True
     session["autenticado"] = True
     session["usuario"]     = usuario
@@ -744,9 +771,10 @@ def auth_login():
     session["servidor"]    = servidor
     session["ip"]          = ip_srv
     session["puerto"]      = puerto
-    session["empresas"]    = empresas  # guardar para /api/auth/me
-    log(f"Login OK: {usuario}@{servidor} — {len(empresas)} empresa(s)", "info")
-    return jsonify({"success": True, "empresas": empresas})
+    session["empresa"]     = empresa
+    session["empresas"]    = empresas
+    log(f"Sesión creada: {usuario}@{servidor} empresa={empresa}", "info")
+    return jsonify({"success": True})
 
 @app.route("/api/auth/logout", methods=["POST"])
 def auth_logout():
@@ -895,7 +923,7 @@ def iniciar():
 
     data = request.get_json()
     casos = data.get("casos", [])
-    empresa  = data.get("empresa", "")
+    empresa  = data.get("empresa", "") or session.get("empresa", "")
     reanudar = data.get("reanudar", False)
 
     if not casos:
