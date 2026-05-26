@@ -4,8 +4,8 @@ Migración API REST — SIS / Esculapio Soft
 """
 
 import os, csv, time, threading, zipfile, logging, json, shutil, re, base64
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning), tempfile
+import urllib3, tempfile
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from datetime import datetime, timedelta
 from pathlib import Path
 from io import BytesIO
@@ -44,8 +44,20 @@ _cache_servidores = None   # lista de dicts con $id, Descripcion, Ip_Conexion, P
 _cache_servidores_ts = 0   # timestamp
 
 
+# Servidores hardcodeados como fallback si la API no responde
+_SERVIDORES_FALLBACK = [
+    {"$id":"1","Ip_Conexion":"192.168.16.251","Descripcion":"Bahia",        "Puerto":3306,"BaseDatos":"bd"},
+    {"$id":"2","Ip_Conexion":"192.168.9.252", "Descripcion":"Baru",         "Puerto":3306,"BaseDatos":"bd"},
+    {"$id":"3","Ip_Conexion":"192.168.2.235", "Descripcion":"Campbell",     "Puerto":3396,"BaseDatos":"bd"},
+    {"$id":"4","Ip_Conexion":"192.168.10.6",  "Descripcion":"Cordialidad IPS","Puerto":3346,"BaseDatos":"bd"},
+    {"$id":"5","Ip_Conexion":"192.168.4.250", "Descripcion":"Maria Reina",  "Puerto":3306,"BaseDatos":"bd"},
+    {"$id":"6","Ip_Conexion":"192.168.23.251","Descripcion":"Monteria",     "Puerto":3346,"BaseDatos":"bd"},
+    {"$id":"7","Ip_Conexion":"190.14.253.121","Descripcion":"SIS Servidor", "Puerto":3396,"BaseDatos":"bd"},
+    {"$id":"8","Ip_Conexion":"192.168.12.251","Descripcion":"Valle Salud",  "Puerto":3306,"BaseDatos":"bd"},
+]
+
 def _get_servidores_api():
-    """Obtiene la lista de servidores desde la API. Cache de 5 minutos."""
+    """Obtiene servidores desde API. Si falla, usa lista hardcodeada."""
     import time
     global _cache_servidores, _cache_servidores_ts
     if _cache_servidores and (time.time() - _cache_servidores_ts) < 300:
@@ -54,12 +66,16 @@ def _get_servidores_api():
         resp = req_lib.get(API_SERVIDORES, timeout=10, verify=False)
         resp.raise_for_status()
         data = resp.json()
-        _cache_servidores    = data if isinstance(data, list) else []
-        _cache_servidores_ts = time.time()
-        return _cache_servidores
+        if isinstance(data, list) and len(data) > 0:
+            _cache_servidores    = data
+            _cache_servidores_ts = time.time()
+            return _cache_servidores
     except Exception as e:
-        log(f"Error consultando servidores API: {e}", "warn")
-        return _cache_servidores or []
+        log(f"API servidores no disponible, usando lista local: {e}", "warn")
+    # Fallback: lista hardcodeada
+    _cache_servidores    = _SERVIDORES_FALLBACK
+    _cache_servidores_ts = time.time()
+    return _cache_servidores
 
 
 def _get_empresas_api(ip, puerto, usuario, password):
