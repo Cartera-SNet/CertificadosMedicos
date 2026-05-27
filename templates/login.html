@@ -39,7 +39,7 @@
     <div class="flex flex-col items-center mb-6">
         <img src="/static/SIS.png" alt="SIS" class="h-10 mb-3">
         <div class="text-4xl mb-2">🤖</div>
-        <h1 class="text-xl font-bold text-gray-800">Certificaciones Médicas SOAT</h1>
+        <h1 class="text-xl font-bold text-gray-800">Certificaciones Médicas</h1>
         <p class="text-gray-500 text-sm mt-1">Ingresa tus credenciales para continuar</p>
     </div>
 
@@ -115,12 +115,25 @@
                 <label class="block text-xs font-semibold text-gray-600 mb-1.5">
                     <i class="fas fa-building mr-1 text-indigo-400"></i>Empresa
                 </label>
-                <div class="input-wrap">
-                    <i class="fas fa-building input-icon"></i>
-                    <select id="selEmpresa" class="field">
-                        <option value="">— Selecciona empresa —</option>
-                    </select>
+                <!-- Dropdown custom con búsqueda -->
+                <div id="empresaDropdown" class="relative">
+                    <button type="button" id="empresaBtn" onclick="toggleDropdown()"
+                        class="field w-full flex items-center justify-between text-left cursor-pointer"
+                        style="padding-left:1rem;">
+                        <span id="empresaBtnText" class="text-gray-400 truncate text-sm">— Selecciona empresa —</span>
+                        <i class="fas fa-chevron-down text-gray-400 text-xs ml-2 flex-shrink-0" id="empresaChevron"></i>
+                    </button>
+                    <div id="empresaMenu" class="hidden absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl overflow-hidden">
+                        <div class="p-2 border-b border-gray-100 sticky top-0 bg-white">
+                            <input type="text" id="empresaSearch" placeholder="🔍  Buscar empresa..."
+                                oninput="filtrarEmpresas(this.value)"
+                                onclick="event.stopPropagation()"
+                                class="w-full px-3 py-1.5 text-sm border border-gray-200 rounded-lg outline-none focus:border-indigo-400 bg-gray-50">
+                        </div>
+                        <div id="empresaLista" class="overflow-y-auto" style="max-height:220px;"></div>
+                    </div>
                 </div>
+                <input type="hidden" id="selEmpresa" value="">
             </div>
             <button id="btnIngresar" onclick="ingresar()" class="btn btn-primary">
                 <i class="fas fa-sign-in-alt mr-2"></i>Ingresar al Bot
@@ -210,13 +223,8 @@
 
             // Cargar empresas en paso 2
             credencialesOk = { servidor, usuario, password, empresas: data.empresas };
-            const sel = document.getElementById('selEmpresa');
-            sel.innerHTML = '<option value="">— Selecciona empresa —</option>';
-            data.empresas.forEach(e => {
-                const o = document.createElement('option');
-                o.value = e.cod; o.textContent = e.nombre || e.cod; sel.appendChild(o);
-            });
-            if (data.empresas.length === 1) sel.value = data.empresas[0].cod;
+            poblarEmpresas(data.empresas);
+            if (data.empresas.length === 1) seleccionarEmpresa(data.empresas[0]);
 
             document.getElementById('badgeUsuario').textContent = `${usuario} @ ${servidor}`;
             ocultarMensajes();
@@ -276,6 +284,76 @@
             btn.innerHTML = '<i class="fas fa-sign-in-alt mr-2"></i>Ingresar al Bot';
         }
     }
+
+    // ── Dropdown empresa custom ─────────────────────
+    let _empresasData = [];
+
+    function poblarEmpresas(empresas) {
+        _empresasData = empresas;
+        renderLista(empresas);
+        // Si solo hay una, seleccionar automáticamente
+        if (empresas.length === 1) seleccionarEmpresa(empresas[0]);
+    }
+
+    function renderLista(empresas) {
+        const lista = document.getElementById('empresaLista');
+        if (!empresas.length) {
+            lista.innerHTML = '<p class="text-xs text-gray-400 text-center py-3">Sin resultados</p>';
+            return;
+        }
+        lista.innerHTML = empresas.map(e => {
+            const sede = e.sede ? `<span class="text-xs text-indigo-400 ml-1">· ${e.sede}</span>` : '';
+            return `<div class="empresa-item px-3 py-2 cursor-pointer hover:bg-indigo-50 flex items-center gap-2 border-b border-gray-50 last:border-0"
+                        onclick="seleccionarEmpresa(${JSON.stringify(e).replace(/"/g, '&quot;')})"
+                        data-cod="${e.cod}">
+                        <span class="bg-indigo-100 text-indigo-700 font-bold text-xs px-1.5 py-0.5 rounded flex-shrink-0">${e.cod}</span>
+                        <span class="text-gray-700 text-xs truncate">${e.nombre}${sede ? ' · ' + e.sede : ''}</span>
+                    </div>`;
+        }).join('');
+    }
+
+    function filtrarEmpresas(q) {
+        const q2 = q.toLowerCase();
+        const filtradas = _empresasData.filter(e =>
+            e.cod.toLowerCase().includes(q2) ||
+            e.nombre.toLowerCase().includes(q2) ||
+            (e.sede || '').toLowerCase().includes(q2)
+        );
+        renderLista(filtradas);
+    }
+
+    function seleccionarEmpresa(e) {
+        document.getElementById('selEmpresa').value = e.cod;
+        const sede = e.sede ? ` · ${e.sede}` : '';
+        document.getElementById('empresaBtnText').textContent = `${e.cod} — ${e.nombre}${sede}`;
+        document.getElementById('empresaBtnText').classList.remove('text-gray-400');
+        document.getElementById('empresaBtnText').classList.add('text-gray-800');
+        cerrarDropdown();
+    }
+
+    function toggleDropdown() {
+        const menu = document.getElementById('empresaMenu');
+        const chevron = document.getElementById('empresaChevron');
+        if (menu.classList.contains('hidden')) {
+            menu.classList.remove('hidden');
+            chevron.style.transform = 'rotate(180deg)';
+            document.getElementById('empresaSearch').focus();
+        } else {
+            cerrarDropdown();
+        }
+    }
+
+    function cerrarDropdown() {
+        document.getElementById('empresaMenu').classList.add('hidden');
+        document.getElementById('empresaChevron').style.transform = '';
+    }
+
+    // Cerrar al hacer click fuera
+    document.addEventListener('click', (e) => {
+        if (!document.getElementById('empresaDropdown').contains(e.target)) {
+            cerrarDropdown();
+        }
+    });
 
     // Enter en campos
     ['selServidor','inpUsuario','inpPassword'].forEach(id => {

@@ -4,6 +4,8 @@ Generación masiva de certificados médicos con Flask.
 """
 
 import os, csv, time, threading, zipfile, logging, json, shutil, re, base64, urllib3
+import boto3
+from botocore.client import Config
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -109,6 +111,39 @@ def forzar_https():
         return redirect(request.url.replace("http://", "https://", 1), code=301)
 
 # ── Rate limiting ───────────────────────────────────────────
+# ── Backblaze B2 ──────────────────────────────────────────
+B2_KEY_ID     = os.environ.get("B2_KEY_ID", "")
+B2_APP_KEY    = os.environ.get("B2_APP_KEY", "")
+B2_BUCKET     = os.environ.get("B2_BUCKET", "esculapio-zips")
+B2_ENDPOINT   = os.environ.get("B2_ENDPOINT", "https://s3.us-east-005.backblazeb2.com")
+B2_URL_EXPIRY = 3600
+
+def b2_subir_y_firmar(zip_path, nombre_zip):
+    if not B2_KEY_ID or not B2_APP_KEY:
+        return None
+    try:
+        import boto3
+        from botocore.client import Config
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=B2_ENDPOINT,
+            aws_access_key_id=B2_KEY_ID,
+            aws_secret_access_key=B2_APP_KEY,
+            config=Config(signature_version="s3v4"),
+        )
+        L.info(f"Subiendo ZIP a Backblaze: {nombre_zip}")
+        s3.upload_file(str(zip_path), B2_BUCKET, nombre_zip)
+        url = s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": B2_BUCKET, "Key": nombre_zip},
+            ExpiresIn=B2_URL_EXPIRY,
+        )
+        L.info("ZIP listo en B2")
+        return url
+    except Exception as e:
+        L.warning(f"Error B2: {e}")
+        return None
+
 _login_intentos = {}
 _LOGIN_MAX = 5; _LOGIN_VENTANA = 600; _LOGIN_BLOQUEO = 900
 
@@ -176,31 +211,43 @@ if REPORTLAB_OK:
     except:
         pass
 
-# Estado global del proceso
-S = {
-    "running": False, "stopping": False, "logs": [],
-    "stats": {"total": 0, "ok": 0, "err": 0},
-    "finished": False, "error": None, "zip_path": None,
-    "session_dir": None, "completadas": set(),
-    "exitosos": [], "errores": [],
-}
+# Estados por usuario (multi-usuario)
+ESTADOS = {}   # { uid: { estado del proceso } }
 LK = threading.Lock()
+
+def _nuevo_estado():
+    return {
+        "running": False, "stopping": False, "logs": [],
+        "stats": {"total": 0, "ok": 0, "err": 0},
+        "finished": False, "error": None, "zip_path": None, "zip_url": None,
+        "session_dir": None, "completadas": set(),
+        "exitosos": [], "errores": [],
+    }
+
+def get_S():
+    """Obtiene o crea el estado del usuario actual."""
+    uid = session.get("usuario", "default") + "@" + session.get("servidor", "x")
+    with LK:
+        if uid not in ESTADOS:
+            ESTADOS[uid] = _nuevo_estado()
+        return ESTADOS[uid]
 
 class StopBotException(Exception):
     pass
 
-def log(msg, lvl="info"):
+def log(msg, lvl="info", S=None):
     ts = datetime.now().strftime("%H:%M:%S")
-    with LK:
-        S["logs"].append({"ts": ts, "msg": msg, "level": lvl})
+    if S is not None:
+        with LK:
+            S["logs"].append({"ts": ts, "msg": msg, "level": lvl})
     L.info(f"[{ts}] {msg}")
 
-def reset():
+def reset(S):
     with LK:
         S.update({
             "running": False, "stopping": False, "logs": [],
             "stats": {"total": 0, "ok": 0, "err": 0},
-            "finished": False, "error": None, "zip_path": None,
+            "finished": False, "error": None, "zip_path": None, "zip_url": None,
             "session_dir": None, "completadas": set(),
             "exitosos": [], "errores": [],
         })
@@ -529,7 +576,7 @@ def generar_excel_reporte(session_dir, exitosos, errores) -> Path:
 # ------------------------------------------------------------
 # PROCESO PRINCIPAL (PARALELO CON REPORTLAB)
 # ------------------------------------------------------------
-def ejecutar_proceso(casos, config, session_dir, completadas_previas, num_workers=3):
+def ejecutar_proceso(casos, config, session_dir, completadas_previas, S, num_workers=3):
     zipf = None
     zip_path = None
     exitosos = []
@@ -590,9 +637,17 @@ def ejecutar_proceso(casos, config, session_dir, completadas_previas, num_worker
                     }
                     resp = sesion.get(API_BASE, params=params, timeout=120, verify=False)
                     if resp.status_code != 200:
-                        raise Exception(f"HTTP {resp.status_code}")
+                        raise Exception(f"El caso no tiene certificado médico (código {resp.status_code})")
                     data = resp.json()
-                    datos_api = data[0] if isinstance(data, list) and data else data
+                    # Extraer el primer dict válido aunque venga lista anidada
+                    if isinstance(data, list):
+                        datos_api = next((item for item in data if isinstance(item, dict)), None)
+                        if datos_api is None:
+                            raise Exception("No se encontraron datos para este caso en el sistema")
+                    elif isinstance(data, dict):
+                        datos_api = data
+                    else:
+                        raise Exception("El sistema respondió en un formato no esperado")
 
                     ruta_firma_png = None
                     firma_b64 = datos_api.get("FirmaMedico", "")
@@ -620,8 +675,21 @@ def ejecutar_proceso(casos, config, session_dir, completadas_previas, num_worker
                     if intento == 0:
                         time.sleep(1)
                     if intento == 1:
-                        return False, no_cuenta, nombre_pdf, None, str(e)
-            return False, no_cuenta, nombre_pdf, None, "Error inesperado"
+                        msg = str(e)
+                        if "'list' object has no attribute 'get'" in msg:
+                            msg = "Formato de respuesta inesperado en la API"
+                        elif "list index out of range" in msg:
+                            msg = "El caso no devolvió datos en el sistema"
+                        elif "500" in msg:
+                            msg = "Sin certificado médico registrado"
+                        elif "timeout" in msg.lower():
+                            msg = "Tiempo de espera agotado"
+                        elif "connection" in msg.lower():
+                            msg = "Error de conexión con Esculapio"
+                        elif "JSONDecodeError" in msg or "json" in msg.lower():
+                            msg = "Respuesta inválida del sistema"
+                        return False, no_cuenta, nombre_pdf, None, msg
+            return False, no_cuenta, nombre_pdf, None, "Error inesperado al procesar el caso"
 
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {executor.submit(worker, caso): caso for caso in pendientes}
@@ -634,7 +702,7 @@ def ejecutar_proceso(casos, config, session_dir, completadas_previas, num_worker
                 except StopBotException:
                     raise
                 except Exception as e:
-                    log(f"Error inesperado en worker: {e}", "error")
+                    log(f"Error inesperado en worker: {e}", "error", S=S)
                     continue
 
                 if success and pdf_path and pdf_path.exists():
@@ -647,13 +715,13 @@ def ejecutar_proceso(casos, config, session_dir, completadas_previas, num_worker
                         S["exitosos"].append(no_cuenta)
                     exitosos.append((no_cuenta, nombre_pdf))
                     guardar_progreso(session_dir, completadas_set)
-                    log(f"✓ CM_{nombre_pdf}.pdf [{S['stats']['ok']}/{total}]", "ok")
+                    log(f"✓ CM_{nombre_pdf}.pdf [{S['stats']['ok']}/{total}]", "ok", S=S)
                 else:
                     with LK:
                         S["stats"]["err"] += 1
                         S["errores"].append((no_cuenta, motivo))
                     errores.append((no_cuenta, motivo))
-                    log(f"✗ {no_cuenta}: {motivo}", "error")
+                    log(f"✗ {no_cuenta}: {motivo}", "error", S=S)
 
         for s in sesiones:
             try: s.close()
@@ -666,23 +734,30 @@ def ejecutar_proceso(casos, config, session_dir, completadas_previas, num_worker
         zipf.close()
         with LK:
             S["zip_path"] = zip_path.name
+            S["zip_url"]  = None
+
+        # Subir a Backblaze B2 para descarga directa sin pasar por Railway
+        url_b2 = b2_subir_y_firmar(zip_path, zip_path.name)
+        if url_b2:
+            with LK:
+                S["zip_url"] = url_b2
 
         if not S["stopping"] and len(completadas_set) >= total:
             marcar_sesion_finalizada(session_dir)
-            log("=" * 50, "info")
-            log(f"✅ Completado — Total:{total} OK:{len(exitosos)} Errores:{len(errores)}", "ok")
+            log("=" * 50, "info", S=S)
+            log(f"✅ Completado — Total:{total} OK:{len(exitosos)} Errores:{len(errores)}", "ok", S=S)
         else:
-            log("Sesión guardada para reanudar", "warn")
+            log("Sesión guardada para reanudar", "warn", S=S)
 
         if errores:
-            log("Casos con error:", "warn")
+            log("Casos con error:", "warn", S=S)
             for nc, mot in errores[:10]:
-                log(f"  - {nc}: {mot}", "error")
+                log(f"  - {nc}: {mot}", "error", S=S)
 
     except StopBotException:
-        log("Bot detenido por usuario", "warn")
+        log("Bot detenido por usuario", "warn", S=S)
     except Exception as e:
-        log(f"Error crítico: {e}", "error")
+        log(f"Error crítico: {e}", "error", S=S)
         with LK:
             S["error"] = str(e)
     finally:
@@ -735,7 +810,7 @@ def auth_conectar():
         r = max(0, _LOGIN_MAX - d.get("intentos", 1))
         return jsonify({"error": f"Credenciales inválidas. {r} intento(s) restantes."}), 401
 
-    empresas = [{"cod": e.get("Empresa",""), "nombre": e.get("Nombre_Empresa","")}
+    empresas = [{"cod": e.get("Empresa",""), "nombre": e.get("Nombre_Empresa",""), "sede": e.get("NombreComercial","")}
                 for e in empresas_raw if e.get("Empresa")]
     _ok(ip)
     log(f"Conectado: {usuario}@{servidor} — {len(empresas)} empresa(s)", "info")
@@ -785,6 +860,21 @@ def auth_logout():
     session.clear()
     return jsonify({"success": True})
 
+@app.route("/api/auth/cambiar-empresa", methods=["POST"])
+@login_requerido
+def auth_cambiar_empresa():
+    data        = request.get_json(force=True)
+    empresa_cod = data.get("empresa", "").strip()
+    if not empresa_cod:
+        return jsonify({"error": "Empresa requerida"}), 400
+    # Verificar que la empresa existe en las de la sesión
+    empresas = session.get("empresas", [])
+    valida = any(e.get("cod") == empresa_cod for e in empresas)
+    if not valida:
+        return jsonify({"error": "Empresa no válida para este usuario"}), 403
+    session["empresa"] = empresa_cod
+    return jsonify({"success": True, "empresa": empresa_cod})
+
 @app.route("/api/auth/me")
 def auth_me():
     if session.get("autenticado"):
@@ -794,7 +884,9 @@ def auth_me():
         empresa_nombre = empresa_cod
         for e in empresas:
             if e.get("cod") == empresa_cod:
-                empresa_nombre = e.get("nombre", empresa_cod)
+                nombre = e.get("nombre", empresa_cod)
+                sede   = e.get("sede", "")
+                empresa_nombre = f"{empresa_cod} — {nombre}" + (f" {sede}" if sede else "")
                 break
         return jsonify({
             "autenticado":    True,
@@ -851,7 +943,7 @@ def login_usuario():
         empresas = _get_empresas_api(ip, puerto, usuario, password)
         if not empresas:
             return jsonify({"error": "Credenciales inválidas o usuario sin empresas"}), 401
-        lista = [{"cod": e.get("Empresa", ""), "nombre": e.get("Nombre_Empresa", "")}
+        lista = [{"cod": e.get("Empresa", ""), "nombre": e.get("Nombre_Empresa", ""), "sede": e.get("NombreComercial", "")}
                  for e in empresas if e.get("Empresa")]
         if not lista:
             return jsonify({"error": "No se encontraron empresas"}), 401
@@ -930,10 +1022,11 @@ def cargar_datos():
 @app.route("/api/iniciar", methods=["POST"])
 @login_requerido
 def iniciar():
+    S = get_S()
     with LK:
         if S["running"]:
             return jsonify({"error": "Proceso en curso"}), 400
-    reset()
+    reset(S)
 
     data = request.get_json()
     casos = data.get("casos", [])
@@ -981,7 +1074,7 @@ def iniciar():
 
     threading.Thread(
         target=ejecutar_proceso,
-        args=(casos, config, session_dir, completadas, 3),
+        args=(casos, config, session_dir, completadas, S, 3),
         daemon=True
     ).start()
 
@@ -990,6 +1083,7 @@ def iniciar():
 @app.route("/api/detener", methods=["POST"])
 @login_requerido
 def detener():
+    S = get_S()
     with LK:
         S["stopping"] = True
     log("Señal de parada enviada", "warn")
@@ -998,6 +1092,7 @@ def detener():
 @app.route("/api/estado")
 @login_requerido
 def estado():
+    S = get_S()
     offset = int(request.args.get("offset", 0))
     with LK:
         nuevos = S["logs"][offset:]
@@ -1009,12 +1104,14 @@ def estado():
             "stats":       S["stats"],
             "error":       S["error"],
             "zip_path":    S["zip_path"],
+            "zip_url":     S.get("zip_url"),
             "completadas": list(S["completadas"]),
         })
 
 @app.route("/api/sesion-pendiente")
 @login_requerido
 def sesion_pendiente_info():
+    S = get_S()
     try:
         sesion = buscar_sesion_pendiente()
         if not sesion:
@@ -1036,14 +1133,36 @@ def sesion_pendiente_info():
 @app.route("/api/limpiar-progreso", methods=["POST"])
 @login_requerido
 def limpiar_progreso():
+    S = get_S()
     try:
         eliminadas = []
+
+        # Eliminar ZIP de Backblaze B2 si existe
+        zip_nombre = S.get("zip_path")
+        if zip_nombre and B2_KEY_ID and B2_APP_KEY:
+            try:
+                import boto3
+                from botocore.client import Config
+                s3 = boto3.client(
+                    "s3",
+                    endpoint_url=B2_ENDPOINT,
+                    aws_access_key_id=B2_KEY_ID,
+                    aws_secret_access_key=B2_APP_KEY,
+                    config=Config(signature_version="s3v4"),
+                )
+                s3.delete_object(Bucket=B2_BUCKET, Key=zip_nombre)
+                L.info(f"ZIP eliminado de Backblaze: {zip_nombre}")
+            except Exception as e:
+                L.warning(f"No se pudo eliminar de B2: {e}")
+
+        # Eliminar carpetas de sesión locales
         for d in DOWNLOAD_DIR.iterdir():
             if d.is_dir() and d.name.startswith("sesion_"):
                 if not (d / "finalizado.txt").exists():
                     shutil.rmtree(d)
                     eliminadas.append(d.name)
-        reset()
+
+        reset(S)
         return jsonify({"success": True, "eliminadas": eliminadas})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1051,6 +1170,7 @@ def limpiar_progreso():
 @app.route("/api/descargar-zip")
 @login_requerido
 def descargar_zip():
+    S = get_S()
     with LK:
         zp = S["zip_path"]
         session_dir = S["session_dir"]
@@ -1059,8 +1179,31 @@ def descargar_zip():
     zip_file = (session_dir / zp) if session_dir else (DOWNLOAD_DIR / zp)
     if not zip_file.exists():
         return jsonify({"error": "ZIP no encontrado"}), 404
-    return send_file(zip_file, mimetype="application/zip",
-                     as_attachment=True, download_name=zp)
+
+    # Streaming en chunks para archivos grandes (evita timeout en Railway)
+    file_size = zip_file.stat().st_size
+    CHUNK = 1024 * 512  # 512 KB por chunk
+
+    def generate():
+        with open(zip_file, "rb") as f:
+            while True:
+                chunk = f.read(CHUNK)
+                if not chunk:
+                    break
+                yield chunk
+
+    from flask import Response
+    resp = Response(
+        generate(),
+        mimetype="application/zip",
+        headers={
+            "Content-Disposition": f"attachment; filename={zp}",
+            "Content-Length":      str(file_size),
+            "Cache-Control":       "no-cache",
+            "X-Accel-Buffering":   "no",   # desactiva buffering en Railway/nginx
+        }
+    )
+    return resp
 
 if __name__ == "__main__":
     import urllib3
