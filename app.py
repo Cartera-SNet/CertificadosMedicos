@@ -57,9 +57,9 @@ _cache_servidores_ts = 0
 ultimo_error_servidores = None   # None | falta_key | key_rechazada | red | otro
 
 # ── API key (X-Api-Key) ──────────────────────────────────────
-# Prioridad: variable ARMADO_API_KEY > .env (ARMADO_API_KEY) > api_key.txt
+# Prioridad: variable CM_API_KEY > .env (CM_API_KEY) > api_key.txt
 def _cargar_dotenv():
-    """Lector .env mínimo: solo variables ARMADO_*, sin pisar las del sistema."""
+    """Lector .env mínimo: solo variables CM_*, sin pisar las del sistema."""
     p = Path(__file__).parent / ".env"
     try:
         for linea in p.read_text(encoding="utf-8").splitlines():
@@ -68,7 +68,7 @@ def _cargar_dotenv():
                 continue
             k, v = linea.split("=", 1)
             k = k.strip()
-            if k.startswith("ARMADO_") and k not in os.environ:
+            if k.startswith("CM_") and k not in os.environ:
                 os.environ[k] = v.strip().strip('"').strip("'")
     except OSError:
         pass
@@ -76,7 +76,7 @@ def _cargar_dotenv():
 _cargar_dotenv()
 
 def _api_key():
-    k = os.environ.get("ARMADO_API_KEY", "").strip()
+    k = os.environ.get("CM_API_KEY", "").strip()
     if k:
         return k
     try:
@@ -846,7 +846,7 @@ def auth_servidores():
     nombres = sorted({s.get("Descripcion", "").strip() for s in servidores if s.get("Descripcion", "").strip()})
     if not nombres:
         if ultimo_error_servidores == "falta_key":
-            msg = "Esculapio exige una API key (X-Api-Key). Configúrala en ARMADO_API_KEY, .env o api_key.txt."
+            msg = "Esculapio exige una API key (X-Api-Key). Configúrala en CM_API_KEY, .env o api_key.txt."
         elif ultimo_error_servidores == "key_rechazada":
             msg = "Esculapio rechazó la API key configurada. Revisa que esté completa y sea la vigente."
         else:
