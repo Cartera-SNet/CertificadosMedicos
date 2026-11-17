@@ -54,20 +54,63 @@ API_BASE       = "https://appsintranet.esculapiosis.com/ApiCampbell/api/Reportes
 
 _cache_servidores = None
 _cache_servidores_ts = 0
+ultimo_error_servidores = None   # None | falta_key | key_rechazada | red | otro
 
-def _get_servidores_api():
-    import time
-    global _cache_servidores, _cache_servidores_ts
-    if _cache_servidores and (time.time() - _cache_servidores_ts) < 300:
+# ── API key (X-Api-Key) ──────────────────────────────────────
+# Prioridad: variable ARMADO_API_KEY > .env (ARMADO_API_KEY) > api_key.txt
+def _cargar_dotenv():
+    """Lector .env mínimo: solo variables ARMADO_*, sin pisar las del sistema."""
+    p = Path(__file__).parent / ".env"
+    try:
+        for linea in p.read_text(encoding="utf-8").splitlines():
+            linea = linea.strip()
+            if not linea or linea.startswith("#") or "=" not in linea:
+                continue
+            k, v = linea.split("=", 1)
+            k = k.strip()
+            if k.startswith("ARMADO_") and k not in os.environ:
+                os.environ[k] = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+
+_cargar_dotenv()
+
+def _api_key():
+    k = os.environ.get("ARMADO_API_KEY", "").strip()
+    if k:
+        return k
+    try:
+        return (Path(__file__).parent / "api_key.txt").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+def _cabeceras_api():
+    k = _api_key()
+    return {"X-Api-Key": k} if k else {}
+
+def _get_servidores_api(forzar=False):
+    """Lista de servidores. Solo requiere X-Api-Key (sin token)."""
+    global _cache_servidores, _cache_servidores_ts, ultimo_error_servidores
+    if not forzar and _cache_servidores and (time.time() - _cache_servidores_ts) < 300:
         return _cache_servidores
     try:
-        resp = req_lib.get(API_SERVIDORES, timeout=10, verify=False)
+        resp = req_lib.get(API_SERVIDORES, headers=_cabeceras_api(), timeout=10, verify=False)
+        if resp.status_code in (401, 403):
+            ultimo_error_servidores = "key_rechazada" if _api_key() else "falta_key"
+            log(f"Servidores API {resp.status_code}: {ultimo_error_servidores}", "warn")
+            return _cache_servidores or []
         resp.raise_for_status()
         data = resp.json()
         _cache_servidores    = data if isinstance(data, list) else []
         _cache_servidores_ts = time.time()
+        ultimo_error_servidores = None
         return _cache_servidores
+    except req_lib.exceptions.RequestException as e:
+        ultimo_error_servidores = "red"
+        log(f"Error consultando servidores API: {e}", "warn")
+        return _cache_servidores or []
     except Exception as e:
+        ultimo_error_servidores = "otro"
         log(f"Error consultando servidores API: {e}", "warn")
         return _cache_servidores or []
 
@@ -80,7 +123,7 @@ def _get_empresas_api(ip, puerto, usuario, password):
             "Usuario":      usuario,
             "PasswordUsu":  password,
         }
-        resp = req_lib.get(API_EMPRESAS, params=params, timeout=15, verify=False)
+        resp = req_lib.get(API_EMPRESAS, params=params, headers=_cabeceras_api(), timeout=15, verify=False)
         resp.raise_for_status()
         data = resp.json()
         return data if isinstance(data, list) else []
@@ -611,6 +654,7 @@ def ejecutar_proceso(casos, config, session_dir, completadas_previas, S, num_wor
         sesiones = [req_lib.Session() for _ in range(workers)]
         for s in sesiones:
             s.verify = False
+            s.headers.update(_cabeceras_api())
 
         def worker(caso):
             if isinstance(caso, dict):
@@ -779,6 +823,37 @@ def login_page():
         return redirect(url_for("index"))
     return render_template("login.html")
 
+_srv_intentos = {}   # ip -> [timestamps] (límite de consultas de la lista)
+
+@app.route("/api/auth/servidores", methods=["POST"])
+def auth_servidores():
+    """Lista de servidores (solo nombres) una vez escritos usuario y contraseña."""
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
+    ahora = time.time()
+    marcas = [t for t in _srv_intentos.get(ip, []) if ahora - t < 60]
+    if len(marcas) >= 30:
+        return jsonify({"error": "Demasiadas solicitudes. Espera un momento."}), 429
+    marcas.append(ahora)
+    _srv_intentos[ip] = marcas
+
+    data     = request.get_json(silent=True) or {}
+    usuario  = str(data.get("usuario", "")).strip()
+    password = str(data.get("password", "")).strip()
+    if not usuario or not password:
+        return jsonify({"error": "Usuario o contraseña incorrectos"}), 401
+
+    servidores = _get_servidores_api()
+    nombres = sorted({s.get("Descripcion", "").strip() for s in servidores if s.get("Descripcion", "").strip()})
+    if not nombres:
+        if ultimo_error_servidores == "falta_key":
+            msg = "Esculapio exige una API key (X-Api-Key). Configúrala en ARMADO_API_KEY, .env o api_key.txt."
+        elif ultimo_error_servidores == "key_rechazada":
+            msg = "Esculapio rechazó la API key configurada. Revisa que esté completa y sea la vigente."
+        else:
+            msg = "No se pudo obtener la lista de servidores."
+        return jsonify({"error": msg, "servidores": []}), 502
+    return jsonify({"servidores": nombres})
+
 @app.route("/api/auth/conectar", methods=["POST"])
 def auth_conectar():
     """Paso 1: valida credenciales y devuelve empresas (sin crear sesión aún)."""
@@ -905,24 +980,6 @@ def auth_me():
 @login_requerido
 def index():
     return render_template("index.html")
-
-@app.route("/api/servidores")
-def get_servidores():  # Pública — usada en login
-    try:
-        servidores = _get_servidores_api()
-        data = {}
-        for srv in servidores:
-            nombre = srv.get("Descripcion", "").strip()
-            if nombre:
-                data[nombre] = {
-                    "id":     srv.get("$id", ""),
-                    "ip":     srv.get("Ip_Conexion", ""),
-                    "puerto": str(srv.get("Puerto", "3306")),
-                    "usuario_default": srv.get("Usuario", ""),
-                }
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/login", methods=["POST"])
 @login_requerido
